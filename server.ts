@@ -402,7 +402,7 @@ app.post("/api/tasks/:taskId/files", (req, res) => {
     fileName,
     path: filePath || fileName,
     extension: extension || fileName.split('.').pop() || "cs",
-    baseContent: baseContent || "",
+    baseContent: baseContent || featureContent || "",
     featureContent: featureContent || "",
     resolvedContent: "",
     isConflict: startsWithConflict,
