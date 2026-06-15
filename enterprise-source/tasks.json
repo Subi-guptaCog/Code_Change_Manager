@@ -1,0 +1,22 @@
+[
+  {
+    "taskId": "TASK-1001",
+    "baseBranch": "main",
+    "featureBranch": "feature/billing-security",
+    "description": "Enforce PCI-compliant database indexing and safe multi-tenant connection mappings.",
+    "developer": "Diana Prince",
+    "createdDate": "2026-06-13T08:29:16.411Z",
+    "repositoryUrl": "https://github.com/enterprise/billing-api.git",
+    "commitId": "m3a9fcd2"
+  },
+  {
+    "taskId": "TASK-1002",
+    "baseBranch": "main",
+    "featureBranch": "feature/user-auth-jwt",
+    "description": "Upgrade identity assertions and password strength validation telemetry.",
+    "developer": "Marcus Chen",
+    "createdDate": "2026-06-14T08:29:16.411Z",
+    "repositoryUrl": "https://github.com/enterprise/auth-service.git",
+    "commitId": "m7f10b2a"
+  }
+]

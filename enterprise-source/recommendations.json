@@ -1,0 +1,14 @@
+[
+  {
+    "id": "ai_1001_1",
+    "taskId": "TASK-1001",
+    "category": "Conflict Prediction",
+    "recommendationText": "Conflict in GetConnection() can block immediate merging. Resolve by choosing the secure signature overload containing validation checks."
+  },
+  {
+    "id": "ai_1001_2",
+    "taskId": "TASK-1001",
+    "category": "Code Quality",
+    "recommendationText": "Explicit index forces in DapperQueryHandler can override SQL optimizer. Confirm IX_Merchant_Billing is index reconstructed."
+  }
+]

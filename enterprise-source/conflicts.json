@@ -1,0 +1,12 @@
+[
+  {
+    "id": "c_1001_1",
+    "taskId": "TASK-1001",
+    "fileId": "f_1001_1",
+    "conflictText": "using System;\nusing System.Data.SqlClient;\n\nnamespace Enterprise.Billing\n{\n    public class BillingConnectionManager\n    {\n        private readonly string _connectionString;\n\n        public BillingConnectionManager(string connectionString)\n        {\n            _connectionString = connectionString;\n        }\n\n        public SqlConnection GetConnection()\n        {\n            // Secure connection initialization with strict PCI-compliance audit logging\n            if (string.IsNullOrEmpty(_connectionString))\n            {\n                throw new InvalidOperationException(\"Secure connection string must not be empty.\");\n            }\n            var connection = new SqlConnection(_connectionString);\n            Console.WriteLine(\"[Audit] Securing SSL channel for multi-tenancy billing context.\");\n            return connection;\n        }\n    }\n}",
+    "resolution": "",
+    "auditTrail": [
+      "System: Initial scan detected parallel modification merge blockages in 'BillingConnectionManager.cs'."
+    ]
+  }
+]
