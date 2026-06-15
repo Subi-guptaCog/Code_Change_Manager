@@ -2,7 +2,6 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import { GoogleGenAI } from "@google/genai";
-import sql from "mssql";
 
 // Helper for Vercel/Serverless compatible writable folder
 const getEnterpriseDir = (): string => {
@@ -46,6 +45,304 @@ let taskFiles: any[] = [];
 let taskConflicts: any[] = [];
 let aiRecommendations: any[] = [];
 
+// Standard seed data to keep workspace always live and initialized elegantly
+const DEFAULT_TASKS = [
+  {
+    taskId: "TASK-1001",
+    baseBranch: "main",
+    featureBranch: "feature/payment-pooling",
+    description: "Troubleshoot connection leaks and optimize payment merchant gateway client pool size.",
+    developer: "Marcus Chen",
+    createdDate: "2026-06-10T08:30:00.000Z",
+    repositoryUrl: "https://github.com/enterprise/gateway-pay.git",
+    commitId: "m_db9aef2"
+  },
+  {
+    taskId: "TASK-1002",
+    baseBranch: "main",
+    featureBranch: "feature/billing-routing",
+    description: "Deploy memory-efficient streaming middleware for bulk telemetry billing export.",
+    developer: "Diana Prince",
+    createdDate: "2026-06-12T14:15:00.000Z",
+    repositoryUrl: "https://github.com/enterprise/billing-api.git",
+    commitId: "m_6fb402a"
+  },
+  {
+    taskId: "TASK-1003",
+    baseBranch: "main",
+    featureBranch: "feature/order-stripe-sync",
+    description: "Merge master into stripe feature branch and resolve critical checkout conflict on OrderService.cs.",
+    developer: "Clara Oswald",
+    createdDate: "2026-06-14T11:05:00.000Z",
+    repositoryUrl: "https://github.com/enterprise/checkout-service.git",
+    commitId: "m_e89100c"
+  }
+];
+
+const DEFAULT_FILES = [
+  {
+    id: "file_1001_1",
+    taskId: "TASK-1001",
+    fileName: "PaymentController.cs",
+    path: "Controllers/PaymentController.cs",
+    extension: "cs",
+    baseContent: `using System;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Mvc;
+
+namespace GatewayPay.Controllers
+{
+    [ApiController]
+    [Route("api/payments")]
+    public class PaymentController : ControllerBase
+    {
+        private readonly IMerchantClient _merchantClient;
+
+        public PaymentController(IMerchantClient merchantClient)
+        {
+            _merchantClient = merchantClient;
+        }
+
+        [HttpPost("charge")]
+        public async Task<IActionResult> ChargePayment([FromBody] ChargeRequest request)
+        {
+            // Execute payment processing task
+            var response = await _merchantClient.ProcessChargeAsync(request.Payload);
+            return Ok(response);
+        }
+    }
+}`,
+    featureContent: `using System;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Mvc;
+
+namespace GatewayPay.Controllers
+{
+    [ApiController]
+    [Route("api/payments")]
+    public class PaymentController : ControllerBase
+    {
+        private readonly IMerchantClientFactory _clientFactory;
+        private readonly IPoolLogger _logger;
+
+        public PaymentController(IMerchantClientFactory clientFactory, IPoolLogger logger)
+        {
+            _clientFactory = clientFactory;
+            _logger = logger;
+        }
+
+        [HttpPost("charge")]
+        public async Task<IActionResult> ChargePayment([FromBody] ChargeRequest request)
+        {
+            _logger.LogTrace("Acquiring connection from client pool...");
+            using (var client = _clientFactory.AcquireClient())
+            {
+                var response = await client.ProcessChargeAsync(request.Payload);
+                _logger.LogTrace("Releasing connection back to pooled client gateway.");
+                return Ok(response);
+            }
+        }
+    }
+}`,
+    resolvedContent: "",
+    isConflict: false,
+    isResolved: false
+  },
+  {
+    id: "file_1001_2",
+    taskId: "TASK-1001",
+    fileName: "ClientPool.cs",
+    path: "Infrastructure/ClientPool.cs",
+    extension: "cs",
+    baseContent: `using System;
+using System.Collections.Generic;
+
+namespace GatewayPay.Infrastructure
+{
+    public class ClientPool
+    {
+        private readonly int _maxSize = 10;
+        
+        public ClientPool()
+        {
+        }
+    }
+}`,
+    featureContent: `using System;
+using System.Collections.Concurrent;
+using System.Threading;
+
+namespace GatewayPay.Infrastructure
+{
+    public class ClientPool : IDisposable
+    {
+        private readonly int _maxSize = 120; // Increased to prevent checkout exhaustion
+        private readonly ConcurrentBag<IMerchantClient> _pool;
+        private int _allocatedCount = 0;
+
+        public ClientPool(int maxSize)
+        {
+            _maxSize = maxSize;
+            _pool = new ConcurrentBag<IMerchantClient>();
+        }
+
+        public IMerchantClient Checkout()
+        {
+            if (_pool.TryTake(out var client))
+            {
+                return client;
+            }
+
+            if (Interlocked.Increment(ref _allocatedCount) <= _maxSize)
+            {
+                return new MerchantClient();
+            }
+
+            Interlocked.Decrement(ref _allocatedCount);
+            throw new InvalidOperationException("Merchant Client Gateway connection pooling exhausted!");
+        }
+
+        public void Release(IMerchantClient client)
+        {
+            if (client != null)
+            {
+                _pool.Add(client);
+            }
+        }
+
+        public void Dispose()
+        {
+            while(_pool.TryTake(out var client))
+            {
+                client?.Dispose();
+            }
+        }
+    }
+}`,
+    resolvedContent: "",
+    isConflict: false,
+    isResolved: false
+  },
+  {
+    id: "file_1002_1",
+    taskId: "TASK-1002",
+    fileName: "BillingRouter.cs",
+    path: "Middleware/BillingRouter.cs",
+    extension: "cs",
+    baseContent: `using System;
+using System.IO;
+using Microsoft.AspNetCore.Http;
+
+namespace BillingApi.Middleware
+{
+    public class BillingRouter
+    {
+        private readonly RequestDelegate _next;
+
+        public BillingRouter(RequestDelegate next)
+        {
+            _next = next;
+        }
+
+        public async Task Invoke(HttpContext context)
+        {
+            await _next(context);
+        }
+    }
+}`,
+    featureContent: `using System;
+using System.IO;
+using System.Text.Json;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
+
+namespace BillingApi.Middleware
+{
+    public class BillingRouter
+    {
+        private readonly RequestDelegate _next;
+        private readonly IBillingStore _store;
+
+        public BillingRouter(RequestDelegate next, IBillingStore store)
+        {
+            _next = next;
+            _store = store;
+        }
+
+        public async Task Invoke(HttpContext context)
+        {
+            if (context.Request.Path.StartsWithSegments("/api/telemetry/bill"))
+            {
+                context.Response.ContentType = "application/json";
+                using (var streamWriter = new StreamWriter(context.Response.Body))
+                {
+                    await foreach (var row in _store.GetStreamableBillingBatchesAsync())
+                    {
+                        var json = JsonSerializer.Serialize(row);
+                        await streamWriter.WriteLineAsync(json);
+                        await streamWriter.FlushAsync();
+                    }
+                }
+                return;
+            }
+            await _next(context);
+        }
+    }
+}`,
+    resolvedContent: "",
+    isConflict: false,
+    isResolved: false
+  },
+  {
+    id: "file_1003_1",
+    taskId: "TASK-1003",
+    fileName: "OrderService.cs",
+    path: "Services/OrderService.cs",
+    extension: "cs",
+    baseContent: `using System;
+using System.Threading.Tasks;
+
+namespace CheckoutService.Services
+{
+    public class OrderService
+    {
+        public async Task<OrderResponse> ProcessOrderAsync(OrderRequest request)
+        {
+            Console.WriteLine("Processing customer checkout order...");
+            return new OrderResponse { Success = true };
+        }
+    }
+}`,
+    featureContent: `using System;
+using System.Threading.Tasks;
+
+namespace CheckoutService.Services
+{
+    public class OrderService
+    {
+<<<<<<< HEAD
+        public async Task<OrderResponse> ProcessOrderAsync(OrderRequest request)
+        {
+            // Charge legacy payment merchant system (Fallback payment provider)
+            var response = await _legacyGateway.ChargeAsync(request.UserId, request.Subtotal);
+            return new OrderResponse { Success = response.Success, Code = "LEGACY_PAY" };
+        }
+=======
+        public async Task<OrderResponse> ProcessOrderAsync(OrderRequest request)
+        {
+            // Stripe API Integration (Modern Checkout pipeline)
+            var session = await _stripeService.CreateSessionAsync(request.Email, request.Subtotal);
+            return new OrderResponse { Success = session.IsActive, Code = "STRIPE_SUCCESS" };
+        }
+>>>>>>> feature/stripe-payment
+    }
+}`,
+    resolvedContent: "",
+    isConflict: true,
+    isResolved: false
+  }
+];
+
 // Check if MSSQL is configured in environment
 const isMssqlConfigured = (): boolean => {
   return !!(
@@ -55,8 +352,17 @@ const isMssqlConfigured = (): boolean => {
   );
 };
 
-let dbPool: sql.ConnectionPool | null = null;
+let dbPool: any = null;
 let mssqlError: string | null = null;
+let mssqlLib: any = null;
+
+// Lazy module loader helper to completely split packages resolution on Vercel lambda cold boots
+const loadMssql = async () => {
+  if (!mssqlLib) {
+    mssqlLib = await import("mssql");
+  }
+  return mssqlLib;
+};
 
 const getMssqlConfig = () => {
   const connectionString = process.env.DB_CONNECTION_STRING || process.env.MSSQL_CONNECTION_STRING;
@@ -78,19 +384,20 @@ const getMssqlConfig = () => {
   };
 };
 
-const getDbPool = async (): Promise<sql.ConnectionPool | null> => {
+const getDbPool = async (): Promise<any | null> => {
   if (!isMssqlConfigured()) return null;
   if (dbPool) return dbPool;
 
   try {
+    const mssql = await loadMssql();
     const config = getMssqlConfig();
     console.log("Connecting to Microsoft SQL Server...");
-    if (typeof config === "string") {
-      dbPool = await sql.connect(config);
-    } else {
-      dbPool = await sql.connect(config);
-    }
+    dbPool = await mssql.connect(config);
     console.log("Joined Microsoft SQL Server successfully!");
+    
+    // Autoseed database tables if they are active but empty
+    await seedDbIfEmpty(dbPool);
+
     mssqlError = null;
     return dbPool;
   } catch (err: any) {
@@ -98,6 +405,74 @@ const getDbPool = async (): Promise<sql.ConnectionPool | null> => {
     mssqlError = err.message || String(err);
     dbPool = null;
     return null;
+  }
+};
+
+const seedDbIfEmpty = async (pool: any) => {
+  try {
+    const checkTasks = await pool.request().query("SELECT COUNT(*) as cnt FROM dbo.CodeTasks");
+    if (checkTasks.recordset[0]?.cnt === 0) {
+      console.log("Database tables are empty. Pre-seeding default enterprise tasks and files...");
+      const mssql = await loadMssql();
+      
+      // Save Tasks
+      for (const t of DEFAULT_TASKS) {
+        const req = pool.request();
+        req.input("TaskId", mssql.NVarChar(100), t.taskId);
+        req.input("BaseBranch", mssql.NVarChar(100), t.baseBranch);
+        req.input("FeatureBranch", mssql.NVarChar(100), t.featureBranch);
+        req.input("Description", mssql.NVarChar(mssql.MAX), t.description);
+        req.input("Developer", mssql.NVarChar(100), t.developer);
+        req.input("CreatedDate", mssql.DateTime2, new Date(t.createdDate));
+        req.input("RepositoryUrl", mssql.NVarChar(2083), t.repositoryUrl);
+        req.input("CommitId", mssql.NVarChar(100), t.commitId);
+        await req.query(`
+          INSERT INTO dbo.CodeTasks (TaskId, BaseBranch, FeatureBranch, Description, Developer, CreatedDate, RepositoryUrl, CommitId)
+          VALUES (@TaskId, @BaseBranch, @FeatureBranch, @Description, @Developer, @CreatedDate, @RepositoryUrl, @CommitId)
+        `);
+      }
+
+      // Save Files
+      for (const f of DEFAULT_FILES) {
+        const req = pool.request();
+        req.input("Id", mssql.NVarChar(100), f.id);
+        req.input("TaskId", mssql.NVarChar(100), f.taskId);
+        req.input("FileName", mssql.NVarChar(255), f.fileName);
+        req.input("Path", mssql.NVarChar(1000), f.path);
+        req.input("Extension", mssql.NVarChar(50), f.extension);
+        req.input("BaseContent", mssql.NVarChar(mssql.MAX), f.baseContent);
+        req.input("FeatureContent", mssql.NVarChar(mssql.MAX), f.featureContent);
+        req.input("ResolvedContent", mssql.NVarChar(mssql.MAX), f.resolvedContent);
+        req.input("IsConflict", mssql.Bit, f.isConflict ? 1 : 0);
+        req.input("IsResolved", mssql.Bit, f.isResolved ? 1 : 0);
+
+        await req.query(`
+          INSERT INTO dbo.TaskFiles (Id, TaskId, FileName, Path, Extension, BaseContent, FeatureContent, ResolvedContent, IsConflict, IsResolved)
+          VALUES (@Id, @TaskId, @FileName, @Path, @Extension, @BaseContent, @FeatureContent, @ResolvedContent, @IsConflict, @IsResolved)
+        `);
+
+        if (f.isConflict) {
+          const confReq = pool.request();
+          confReq.input("Id", mssql.NVarChar(100), "c_" + f.id.replace("file_", ""));
+          confReq.input("TaskId", mssql.NVarChar(100), f.taskId);
+          confReq.input("FileId", mssql.NVarChar(100), f.id);
+          confReq.input("ConflictText", mssql.NVarChar(mssql.MAX), f.featureContent);
+          confReq.input("Resolution", mssql.NVarChar(mssql.MAX), f.resolvedContent);
+          confReq.input("AuditTrail", mssql.NVarChar(mssql.MAX), JSON.stringify([
+            `System: Merge conflicts pre-seeded on database setup inside ${f.fileName}`
+          ]));
+
+          await confReq.query(`
+            INSERT INTO dbo.TaskConflicts (Id, TaskId, FileId, ConflictText, Resolution, AuditTrail)
+            VALUES (@Id, @TaskId, @FileId, @ConflictText, @Resolution, @AuditTrail)
+          `);
+        }
+      }
+
+      console.log("Microsoft SQL database pre-seeded successfully!");
+    }
+  } catch (err) {
+    console.warn("DB Pre-seed skipped or tables not built yet:", err);
   }
 };
 
@@ -129,15 +504,16 @@ const saveCodeTaskToDb = async (task: any): Promise<boolean> => {
     return true;
   }
   
+  const mssql = await loadMssql();
   const request = pool.request();
-  request.input("TaskId", sql.NVarChar(100), task.taskId);
-  request.input("BaseBranch", sql.NVarChar(100), task.baseBranch || "main");
-  request.input("FeatureBranch", sql.NVarChar(100), task.featureBranch || "");
-  request.input("Description", sql.NVarChar(sql.MAX), task.description || "");
-  request.input("Developer", sql.NVarChar(100), task.developer || "Lead Developer");
-  request.input("CreatedDate", sql.DateTime2, task.createdDate ? new Date(task.createdDate) : new Date());
-  request.input("RepositoryUrl", sql.NVarChar(2083), task.repositoryUrl || "https://github.com/enterprise/source.git");
-  request.input("CommitId", sql.NVarChar(100), task.commitId || "");
+  request.input("TaskId", mssql.NVarChar(100), task.taskId);
+  request.input("BaseBranch", mssql.NVarChar(100), task.baseBranch || "main");
+  request.input("FeatureBranch", mssql.NVarChar(100), task.featureBranch || "");
+  request.input("Description", mssql.NVarChar(mssql.MAX), task.description || "");
+  request.input("Developer", mssql.NVarChar(100), task.developer || "Lead Developer");
+  request.input("CreatedDate", mssql.DateTime2, task.createdDate ? new Date(task.createdDate) : new Date());
+  request.input("RepositoryUrl", mssql.NVarChar(2083), task.repositoryUrl || "https://github.com/enterprise/source.git");
+  request.input("CommitId", mssql.NVarChar(100), task.commitId || "");
 
   await request.query(`
     IF NOT EXISTS (SELECT 1 FROM dbo.CodeTasks WHERE TaskId = @TaskId)
@@ -162,13 +538,14 @@ const deleteCodeTaskFromDb = async (taskId: string): Promise<boolean> => {
     return true;
   }
 
-  const transaction = new sql.Transaction(pool);
+  const mssql = await loadMssql();
+  const transaction = new mssql.Transaction(pool);
   try {
     await transaction.begin();
-    await transaction.request().input("TaskId", sql.NVarChar(100), taskId).query("DELETE FROM dbo.TaskConflicts WHERE TaskId = @TaskId");
-    await transaction.request().input("TaskId", sql.NVarChar(100), taskId).query("DELETE FROM dbo.TaskFiles WHERE TaskId = @TaskId");
-    await transaction.request().input("TaskId", sql.NVarChar(100), taskId).query("DELETE FROM dbo.AiRecommendations WHERE TaskId = @TaskId");
-    await transaction.request().input("TaskId", sql.NVarChar(100), taskId).query("DELETE FROM dbo.CodeTasks WHERE TaskId = @TaskId");
+    await transaction.request().input("TaskId", mssql.NVarChar(100), taskId).query("DELETE FROM dbo.TaskConflicts WHERE TaskId = @TaskId");
+    await transaction.request().input("TaskId", mssql.NVarChar(100), taskId).query("DELETE FROM dbo.TaskFiles WHERE TaskId = @TaskId");
+    await transaction.request().input("TaskId", mssql.NVarChar(100), taskId).query("DELETE FROM dbo.AiRecommendations WHERE TaskId = @TaskId");
+    await transaction.request().input("TaskId", mssql.NVarChar(100), taskId).query("DELETE FROM dbo.CodeTasks WHERE TaskId = @TaskId");
     await transaction.commit();
     return true;
   } catch (err) {
@@ -187,8 +564,9 @@ const getTaskFilesFromDb = async (taskId: string): Promise<any[]> => {
     });
   }
 
+  const mssql = await loadMssql();
   const result = await pool.request()
-    .input("TaskId", sql.NVarChar(100), taskId)
+    .input("TaskId", mssql.NVarChar(100), taskId)
     .query("SELECT * FROM dbo.TaskFiles WHERE TaskId = @TaskId OR 'TASK-' + UPPER(TaskId) = @TaskId OR UPPER(TaskId) = 'TASK-' + @TaskId");
 
   return result.recordset.map((row: any) => ({
@@ -218,20 +596,21 @@ const saveTaskFileToDb = async (file: any): Promise<boolean> => {
     return true;
   }
 
+  const mssql = await loadMssql();
   const request = pool.request();
-  request.input("Id", sql.NVarChar(100), file.id);
-  request.input("TaskId", sql.NVarChar(100), file.taskId);
-  request.input("FileName", sql.NVarChar(255), file.fileName);
-  request.input("Path", sql.NVarChar(1000), file.path);
-  request.input("Extension", sql.NVarChar(50), file.extension);
-  request.input("BaseContent", sql.NVarChar(sql.MAX), file.baseContent || "");
-  request.input("FeatureContent", sql.NVarChar(sql.MAX), file.featureContent || "");
-  request.input("ResolvedContent", sql.NVarChar(sql.MAX), file.resolvedContent || "");
-  request.input("IsConflict", sql.Bit, file.isConflict ? 1 : 0);
-  request.input("IsResolved", sql.Bit, file.isResolved ? 1 : 0);
+  request.input("Id", mssql.NVarChar(100), file.id);
+  request.input("TaskId", mssql.NVarChar(100), file.taskId);
+  request.input("FileName", mssql.NVarChar(255), file.fileName);
+  request.input("Path", mssql.NVarChar(1000), file.path);
+  request.input("Extension", mssql.NVarChar(50), file.extension);
+  request.input("BaseContent", mssql.NVarChar(mssql.MAX), file.baseContent || "");
+  request.input("FeatureContent", mssql.NVarChar(mssql.MAX), file.featureContent || "");
+  request.input("ResolvedContent", mssql.NVarChar(mssql.MAX), file.resolvedContent || "");
+  request.input("IsConflict", mssql.Bit, file.isConflict ? 1 : 0);
+  request.input("IsResolved", mssql.Bit, file.isResolved ? 1 : 0);
 
   await pool.request()
-    .input("TaskId", sql.NVarChar(100), file.taskId)
+    .input("TaskId", mssql.NVarChar(100), file.taskId)
     .query(`
       IF NOT EXISTS (SELECT 1 FROM dbo.CodeTasks WHERE TaskId = @TaskId)
       BEGIN
@@ -258,12 +637,12 @@ const saveTaskFileToDb = async (file: any): Promise<boolean> => {
 
   if (file.isConflict) {
     const conflictRequest = pool.request();
-    conflictRequest.input("Id", sql.NVarChar(100), "c_" + file.id.replace("file_", ""));
-    conflictRequest.input("TaskId", sql.NVarChar(100), file.taskId);
-    conflictRequest.input("FileId", sql.NVarChar(100), file.id);
-    conflictRequest.input("ConflictText", sql.NVarChar(sql.MAX), file.featureContent || "");
-    conflictRequest.input("Resolution", sql.NVarChar(sql.MAX), file.resolvedContent || "");
-    conflictRequest.input("AuditTrail", sql.NVarChar(sql.MAX), JSON.stringify([
+    conflictRequest.input("Id", mssql.NVarChar(100), "c_" + file.id.replace("file_", ""));
+    conflictRequest.input("TaskId", mssql.NVarChar(100), file.taskId);
+    conflictRequest.input("FileId", mssql.NVarChar(100), file.id);
+    conflictRequest.input("ConflictText", mssql.NVarChar(mssql.MAX), file.featureContent || "");
+    conflictRequest.input("Resolution", mssql.NVarChar(mssql.MAX), file.resolvedContent || "");
+    conflictRequest.input("AuditTrail", mssql.NVarChar(mssql.MAX), JSON.stringify([
       `System: Merge conflicts detected on file upload inside ${file.fileName}`
     ]));
 
@@ -282,8 +661,8 @@ const saveTaskFileToDb = async (file: any): Promise<boolean> => {
     `);
   } else {
     await pool.request()
-      .input("FileId", sql.NVarChar(100), file.id)
-      .input("Resolution", sql.NVarChar(sql.MAX), file.featureContent || "")
+      .input("FileId", mssql.NVarChar(100), file.id)
+      .input("Resolution", mssql.NVarChar(mssql.MAX), file.featureContent || "")
       .query(`
         UPDATE dbo.TaskConflicts
         SET Resolution = @Resolution
@@ -303,8 +682,9 @@ const deleteTaskFileFromDb = async (fileId: string): Promise<boolean> => {
     return true;
   }
 
+  const mssql = await loadMssql();
   await pool.request()
-    .input("Id", sql.NVarChar(100), fileId)
+    .input("Id", mssql.NVarChar(100), fileId)
     .query("DELETE FROM dbo.TaskFiles WHERE Id = @Id");
 
   return true;
@@ -316,8 +696,9 @@ const getTaskFileByIdFromDb = async (fileId: string): Promise<any | null> => {
     return taskFiles.find(f => f.id === fileId) || null;
   }
 
+  const mssql = await loadMssql();
   const result = await pool.request()
-    .input("Id", sql.NVarChar(100), fileId)
+    .input("Id", mssql.NVarChar(100), fileId)
     .query("SELECT * FROM dbo.TaskFiles WHERE Id = @Id");
 
   if (result.recordset.length === 0) return null;
@@ -353,15 +734,16 @@ const resolveMergeConflictInDb = async (fileId: string, resolution: string, acti
     return file;
   }
 
+  const mssql = await loadMssql();
   await pool.request()
-    .input("Id", sql.NVarChar(100), fileId)
-    .input("Resolution", sql.NVarChar(sql.MAX), resolution)
+    .input("Id", mssql.NVarChar(100), fileId)
+    .input("Resolution", mssql.NVarChar(mssql.MAX), resolution)
     .query("UPDATE dbo.TaskFiles SET ResolvedContent = @Resolution, IsResolved = 1 WHERE Id = @Id");
 
   const auditMessage = `Developer resolved conflict dynamically using command: "Accept ${actionName || 'Manual'}" at ${new Date().toLocaleString()}`;
 
   const result = await pool.request()
-    .input("FileId", sql.NVarChar(100), fileId)
+    .input("FileId", mssql.NVarChar(100), fileId)
     .query("SELECT AuditTrail FROM dbo.TaskConflicts WHERE FileId = @FileId");
 
   let auditTrail = [];
@@ -375,9 +757,9 @@ const resolveMergeConflictInDb = async (fileId: string, resolution: string, acti
   auditTrail.push(auditMessage);
 
   await pool.request()
-    .input("FileId", sql.NVarChar(100), fileId)
-    .input("Resolution", sql.NVarChar(sql.MAX), resolution)
-    .input("AuditTrail", sql.NVarChar(sql.MAX), JSON.stringify(auditTrail))
+    .input("FileId", mssql.NVarChar(100), fileId)
+    .input("Resolution", mssql.NVarChar(mssql.MAX), resolution)
+    .input("AuditTrail", mssql.NVarChar(mssql.MAX), JSON.stringify(auditTrail))
     .query("UPDATE dbo.TaskConflicts SET Resolution = @Resolution, AuditTrail = @AuditTrail WHERE FileId = @FileId");
 
   return await getTaskFileByIdFromDb(fileId);
@@ -385,6 +767,7 @@ const resolveMergeConflictInDb = async (fileId: string, resolution: string, acti
 
 const getRecommendationsFromDb = async (taskId: string): Promise<any[]> => {
   const pool = await getDbPool();
+  const targetId = taskId.toUpperCase();
   if (!pool) {
     return aiRecommendations.filter(r => {
       const r_id = String(r.taskId || "").toUpperCase();
@@ -393,8 +776,9 @@ const getRecommendationsFromDb = async (taskId: string): Promise<any[]> => {
     });
   }
 
+  const mssql = await loadMssql();
   const result = await pool.request()
-    .input("TaskId", sql.NVarChar(100), taskId)
+    .input("TaskId", mssql.NVarChar(100), taskId)
     .query("SELECT * FROM dbo.AiRecommendations WHERE TaskId = @TaskId");
 
   return result.recordset.map((row: any) => ({
@@ -417,19 +801,20 @@ const saveRecommendationsToDb = async (taskId: string, recs: any[]): Promise<boo
     return true;
   }
 
-  const transaction = new sql.Transaction(pool);
+  const mssql = await loadMssql();
+  const transaction = new mssql.Transaction(pool);
   try {
     await transaction.begin();
     await transaction.request()
-      .input("TaskId", sql.NVarChar(100), taskId)
+      .input("TaskId", mssql.NVarChar(100), taskId)
       .query("DELETE FROM dbo.AiRecommendations WHERE TaskId = @TaskId");
 
     for (const rec of recs) {
       await transaction.request()
-        .input("Id", sql.NVarChar(100), rec.id)
-        .input("TaskId", sql.NVarChar(100), taskId)
-        .input("Category", sql.NVarChar(100), rec.category)
-        .input("RecommendationText", sql.NVarChar(sql.MAX), rec.recommendationText)
+        .input("Id", mssql.NVarChar(100), rec.id)
+        .input("TaskId", mssql.NVarChar(100), taskId)
+        .input("Category", mssql.NVarChar(100), rec.category)
+        .input("RecommendationText", mssql.NVarChar(mssql.MAX), rec.recommendationText)
         .query("INSERT INTO dbo.AiRecommendations (Id, TaskId, Category, RecommendationText) VALUES (@Id, @TaskId, @Category, @RecommendationText)");
     }
     await transaction.commit();
@@ -519,7 +904,7 @@ const getStateFilePath = (fileName: string): string => {
   return path.join(getEnterpriseDir(), fileName);
 };
 
-// Safe helper to write state
+// Writes state array models to persistent local JSON files safely
 const saveAppState = () => {
   try {
     const dir = getEnterpriseDir();
@@ -533,10 +918,27 @@ const saveAppState = () => {
   }
 };
 
-// Safe helper to load state
+// Rebuilds files from state back onto the local disk tree physically so standard fs walking doesn't show blank
+const syncTaskFilesToPhysicalWorkspace = () => {
+  try {
+    const root = getEnterpriseDir();
+    fs.mkdirSync(root, { recursive: true });
+    
+    for (const file of taskFiles) {
+      const fullPath = path.join(root, file.path);
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      const content = file.isResolved ? file.resolvedContent : file.featureContent;
+      fs.writeFileSync(fullPath, content || file.baseContent || "", "utf-8");
+    }
+    console.log(`Synced ${taskFiles.length} file snapshots physically to workspace under path: ${root}`);
+  } catch (err) {
+    console.error("Failed to physical sync tasks to disk workspace:", err);
+  }
+};
+
+// Loads state models and triggers physical file synchronization
 const loadAppState = () => {
   try {
-    // Only load from JSON memory state if MSSQL is NOT configured
     if (isMssqlConfigured()) return;
 
     const tasksPath = getStateFilePath("tasks.json");
@@ -546,17 +948,53 @@ const loadAppState = () => {
 
     if (fs.existsSync(tasksPath)) {
       codeTasks = JSON.parse(fs.readFileSync(tasksPath, "utf-8"));
+    } else {
+      codeTasks = [...DEFAULT_TASKS];
     }
+    
     if (fs.existsSync(filesPath)) {
       taskFiles = JSON.parse(fs.readFileSync(filesPath, "utf-8"));
+    } else {
+      taskFiles = [...DEFAULT_FILES];
     }
+    
     if (fs.existsSync(conflictsPath)) {
       taskConflicts = JSON.parse(fs.readFileSync(conflictsPath, "utf-8"));
+    } else {
+      taskConflicts = DEFAULT_FILES.filter(f => f.isConflict).map(f => ({
+        id: "c_" + f.id.replace("file_", ""),
+        taskId: f.taskId,
+        fileId: f.id,
+        conflictText: f.featureContent,
+        resolution: f.resolvedContent,
+        auditTrail: [
+          `System: Merge conflicts pre-seeded on startup inside ${f.fileName}.`
+        ]
+      }));
     }
+    
     if (fs.existsSync(recsPath)) {
       aiRecommendations = JSON.parse(fs.readFileSync(recsPath, "utf-8"));
+    } else {
+      aiRecommendations = [
+        {
+          id: "seed_r1",
+          taskId: "TASK-1001",
+          category: "Code Quality",
+          recommendationText: "Acquiring connections synchronously in a high-throughput webhook handler can deplete pool bag size quickly. Refactor gateway client connections to run in async await blocks."
+        },
+        {
+          id: "seed_r2",
+          taskId: "TASK-1003",
+          category: "Refactoring",
+          recommendationText: "OrderService contains duplicated logging statements and legacy hardcoded payment blocks. Standardize custom client interfaces to abstract stripe gateways."
+        }
+      ];
     }
-    console.log(`Loaded app state successfully: ${codeTasks.length} tasks and ${taskFiles.length} files.`);
+
+    // Always ensure physical files exist on container disk for files browser, walk, and download
+    syncTaskFilesToPhysicalWorkspace();
+
   } catch (err) {
     console.error("Error loading persistent state snapshot:", err);
   }
@@ -569,52 +1007,48 @@ const seedTasksAndFiles = () => {
   const lockPath = getStateFilePath("seed-clean.lock");
   const tasksPath = getStateFilePath("tasks.json");
 
-  if (fs.existsSync(lockPath) || fs.existsSync(tasksPath)) {
+  if (fs.existsSync(tasksPath)) {
     loadAppState();
     return;
   }
 
-  // Clear memory and clean obsolete JSON/CS files to force correct starting empty snapshot
-  codeTasks = [];
-  taskFiles = [];
-  taskConflicts = [];
-  aiRecommendations = [];
-
-  try {
-    const dir = getEnterpriseDir();
-    if (fs.existsSync(dir)) {
-      const deleteRecursive = (p: string) => {
-        if (fs.existsSync(p)) {
-          const stat = fs.statSync(p);
-          if (stat.isDirectory()) {
-            const items = fs.readdirSync(p);
-            items.forEach(item => deleteRecursive(path.join(p, item)));
-            try { fs.rmdirSync(p); } catch (e) {}
-          } else {
-            const isState = ["tasks.json", "files.json", "conflicts.json", "recommendations.json", "seed-v4.lock", "seed-clean.lock"].includes(path.basename(p).toLowerCase());
-            if (!isState) {
-              fs.unlinkSync(p);
-            }
-          }
-        }
-      };
-      const items = fs.readdirSync(dir);
-      items.forEach(item => {
-        const isState = ["tasks.json", "files.json", "conflicts.json", "recommendations.json", "seed-v4.lock", "seed-clean.lock"].includes(item.toLowerCase());
-        if (!isState) {
-          deleteRecursive(path.join(dir, item));
-        }
-      });
+  // Load the beautiful core seed deck!
+  codeTasks = [...DEFAULT_TASKS];
+  taskFiles = [...DEFAULT_FILES];
+  taskConflicts = DEFAULT_FILES.filter(f => f.isConflict).map(f => ({
+    id: "c_" + f.id.replace("file_", ""),
+    taskId: f.taskId,
+    fileId: f.id,
+    conflictText: f.featureContent,
+    resolution: f.resolvedContent,
+    auditTrail: [
+      `System: Merge conflicts pre-seeded on startup inside ${f.fileName}.`
+    ]
+  }));
+  aiRecommendations = [
+    {
+      id: "seed_r1",
+      taskId: "TASK-1001",
+      category: "Code Quality",
+      recommendationText: "Acquiring connections synchronously in a high-throughput webhook handler can deplete pool bag size quickly. Refactor gateway client connections to run in async await blocks."
+    },
+    {
+      id: "seed_r2",
+      taskId: "TASK-1003",
+      category: "Refactoring",
+      recommendationText: "OrderService contains duplicated logging statements and legacy hardcoded payment blocks. Standardize custom client interfaces to abstract stripe gateways."
     }
-  } catch (e) {
-    console.warn("Could not clean old state snapshot files:", e);
-  }
+  ];
 
+  // Sync to physical disk so the deliverables explorer walks and displays them
+  syncTaskFilesToPhysicalWorkspace();
+  
+  // Save persistent state JSON
   saveAppState();
 
   try {
     fs.mkdirSync(getEnterpriseDir(), { recursive: true });
-    fs.writeFileSync(getStateFilePath("seed-clean.lock"), "clean", "utf-8");
+    fs.writeFileSync(lockPath, "clean", "utf-8");
   } catch (err) {
     console.error("Failed to write seed-clean.lock:", err);
   }
@@ -1064,8 +1498,9 @@ app.delete("/api/deliverables/files", async (req, res) => {
       if (matching) {
         const pool = await getDbPool();
         if (pool) {
+          const mssql = await loadMssql();
           await pool.request()
-            .input("Path", sql.NVarChar(1000), matching.path)
+            .input("Path", mssql.NVarChar(1000), matching.path)
             .query("DELETE FROM dbo.TaskFiles WHERE Path = @Path");
         }
       }
