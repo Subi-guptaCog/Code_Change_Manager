@@ -118,7 +118,7 @@ export default function App() {
 
   // Audits tracking UI
   const [auditTrails, setAuditTrails] = useState<string[]>([
-    "System: Code Change Workspace initialized successfully.",
+    "System: CodeShield Workspace initialized successfully.",
     "Database: Connected dynamically to Microsoft SQL Server snapshot simulation."
   ]);
 
@@ -584,7 +584,7 @@ export default function App() {
                 <GitCompare className="w-4 h-4" />
               </div>
               <div>
-                <h1 className="text-sm font-extrabold tracking-tight text-gray-800">Code Change Workspace</h1>
+                <h1 className="text-sm font-extrabold tracking-tight text-gray-800">CodeShield Workspace</h1>
                 <p className="text-[10px] text-gray-500 font-mono leading-tight">Enterprise Conflict & Change Management</p>
               </div>
             </div>
@@ -1434,7 +1434,7 @@ export default function App() {
               <span>Enterprise Integration Architecture & DevOps Blueprint</span>
             </h3>
             <p className="leading-relaxed text-xs">
-              The Code Change Workspace links clean <strong>Angular 18 elements</strong> with an <strong>ASP.NET Core Web API 8.0 server</strong> mapping directly to <strong>SQL Database schemas</strong>. Automatic git hooks monitor dynamic conflict points inside your solution explorer snapshot stack, preventing regression faults and predicting code-merge blockages before final commit verification checks.
+              The CodeShield Workspace links clean <strong>Angular 18 elements</strong> with an <strong>ASP.NET Core Web API 8.0 server</strong> mapping directly to <strong>SQL Database schemas</strong>. Automatic git hooks monitor dynamic conflict points inside your solution explorer snapshot stack, preventing regression faults and predicting code-merge blockages before final commit verification checks.
             </p>
           </section>
 
@@ -1475,7 +1475,7 @@ export default function App() {
             <div className="flex items-center justify-between border-b border-gray-200 pb-2">
               <span className="text-xs font-bold text-gray-800 flex items-center space-x-2">
                 <PlusCircle className="w-4 h-4 text-[#0078D4]" />
-                <span>Create Code Change Task</span>
+                <span>Create CodeShield Task</span>
               </span>
               <button
                 onClick={() => setIsNewTaskModalOpen(false)}

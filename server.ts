@@ -1,7 +1,6 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 
 // Helper for Vercel/Serverless compatible writable folder
@@ -17,8 +16,75 @@ let taskFiles: any[] = [];
 let taskConflicts: any[] = [];
 let aiRecommendations: any[] = [];
 
+// Path for state persistence to prevent stateless Vercel Serverless Function wiping
+const getStateFilePath = (fileName: string): string => {
+  return path.join(getEnterpriseDir(), fileName);
+};
+
+// Safe helper to write state
+const saveAppState = () => {
+  try {
+    const dir = getEnterpriseDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(getStateFilePath("tasks.json"), JSON.stringify(codeTasks, null, 2), "utf-8");
+    fs.writeFileSync(getStateFilePath("files.json"), JSON.stringify(taskFiles, null, 2), "utf-8");
+    fs.writeFileSync(getStateFilePath("conflicts.json"), JSON.stringify(taskConflicts, null, 2), "utf-8");
+    fs.writeFileSync(getStateFilePath("recommendations.json"), JSON.stringify(aiRecommendations, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error saving persistent state snapshot:", err);
+  }
+};
+
+// Safe helper to load state
+const loadAppState = () => {
+  try {
+    const tasksPath = getStateFilePath("tasks.json");
+    const filesPath = getStateFilePath("files.json");
+    const conflictsPath = getStateFilePath("conflicts.json");
+    const recsPath = getStateFilePath("recommendations.json");
+
+    if (fs.existsSync(tasksPath)) {
+      codeTasks = JSON.parse(fs.readFileSync(tasksPath, "utf-8"));
+    }
+    if (fs.existsSync(filesPath)) {
+      taskFiles = JSON.parse(fs.readFileSync(filesPath, "utf-8"));
+    }
+    if (fs.existsSync(conflictsPath)) {
+      taskConflicts = JSON.parse(fs.readFileSync(conflictsPath, "utf-8"));
+    }
+    if (fs.existsSync(recsPath)) {
+      aiRecommendations = JSON.parse(fs.readFileSync(recsPath, "utf-8"));
+    }
+    console.log(`Loaded app state successfully: ${codeTasks.length} tasks and ${taskFiles.length} files.`);
+  } catch (err) {
+    console.error("Error loading persistent state snapshot:", err);
+  }
+};
+
 // Seed default tasks and files to solve cold startup states
 const seedTasksAndFiles = () => {
+  const lockPath = getStateFilePath("seed-v4.lock");
+  const tasksPath = getStateFilePath("tasks.json");
+
+  if (fs.existsSync(lockPath) && fs.existsSync(tasksPath)) {
+    loadAppState();
+    return;
+  }
+
+  // Clean obsolete JSON state files to force correct seeded database snapshot
+  try {
+    const dir = getEnterpriseDir();
+    const filesToClean = ["tasks.json", "files.json", "conflicts.json", "recommendations.json"];
+    filesToClean.forEach(f => {
+      const fp = path.join(dir, f);
+      if (fs.existsSync(fp)) {
+        fs.unlinkSync(fp);
+      }
+    });
+  } catch (e) {
+    console.warn("Could not clean old state snapshot files:", e);
+  }
+
   const seedTask1001 = {
     taskId: "TASK-1001",
     baseBranch: "main",
@@ -66,8 +132,10 @@ namespace Enterprise.Billing
 
         public SqlConnection GetConnection()
         {
-            // Standard Connection Factory
-            return new SqlConnection(_connectionString);
+            // Standard Connection Factory with simple pooling
+            var conn = new SqlConnection(_connectionString);
+            conn.Open();
+            return conn;
         }
     }
 }`,
@@ -85,15 +153,6 @@ namespace Enterprise.Billing
             _connectionString = connectionString;
         }
 
-<<<<<<< HEAD
-        public SqlConnection GetConnection()
-        {
-            // Standard Connection Factory with simple pooling
-            var conn = new SqlConnection(_connectionString);
-            conn.Open();
-            return conn;
-        }
-=======
         public SqlConnection GetConnection()
         {
             // Secure connection initialization with strict PCI-compliance audit logging
@@ -105,7 +164,6 @@ namespace Enterprise.Billing
             Console.WriteLine("[Audit] Securing SSL channel for multi-tenancy billing context.");
             return connection;
         }
->>>>>>> feature/billing-security
     }
 }`,
     resolvedContent: "",
@@ -222,6 +280,16 @@ namespace Enterprise.Billing
   } catch (err) {
     console.error("Failed to seed physical deliverables folder files:", err);
   }
+
+  // Save newly seeded app state
+  saveAppState();
+
+  // Write migration lock file
+  try {
+    fs.writeFileSync(getStateFilePath("seed-v4.lock"), "seeded", "utf-8");
+  } catch (err) {
+    console.error("Failed to write seed-v4.lock:", err);
+  }
 };
 
 // Execute Seeding on startup
@@ -322,6 +390,7 @@ app.post("/api/tasks", (req, res) => {
   };
 
   codeTasks.push(newTask);
+  saveAppState();
   res.status(201).json(newTask);
 });
 
@@ -346,6 +415,7 @@ app.delete("/api/tasks/:taskId", (req, res) => {
   taskFiles = taskFiles.filter(f => !matchTask(f.taskId));
   taskConflicts = taskConflicts.filter(c => !matchTask(c.taskId));
   aiRecommendations = aiRecommendations.filter(r => !matchTask(r.taskId));
+  saveAppState();
 
   res.json({
     success: true,
@@ -383,6 +453,8 @@ app.put("/api/files/:fileId", (req, res) => {
     console.error("Failed to sync updated file to disk:", err);
   }
 
+  saveAppState();
+
   res.json({
     success: true,
     message: `Successfully updated code snapshot for file ${file.fileName}.`,
@@ -419,6 +491,8 @@ app.delete("/api/files/:fileId", (req, res) => {
   } catch (err) {
     console.error("Failed to delete physical file:", err);
   }
+
+  saveAppState();
 
   res.json({
     success: true,
@@ -478,6 +552,8 @@ app.post("/api/tasks/:taskId/files", (req, res) => {
     });
   }
 
+  saveAppState();
+
   res.status(201).json(newFile);
 });
 
@@ -512,6 +588,8 @@ app.post("/api/tasks/merge-resolution", (req, res) => {
     conflict.resolution = resolution;
     conflict.auditTrail.push(`Developer resolved conflict dynamically using command: "Accept ${actionName || 'Manual'}" at ${new Date().toLocaleString()}`);
   }
+
+  saveAppState();
 
   res.json({ message: "Merge conflict successfully resolved!", file });
 });
@@ -585,6 +663,7 @@ Always return a raw valid JSON array. Do not include markdown tags, do not wrap 
 
       // Merge and save state
       aiRecommendations = aiRecommendations.filter(r => r.taskId !== taskId).concat(items);
+      saveAppState();
       return res.json(items);
     } catch (ex: any) {
       console.error("Gemini runtime fail: ", ex);
@@ -614,6 +693,7 @@ Always return a raw valid JSON array. Do not include markdown tags, do not wrap 
   ];
   
   aiRecommendations = aiRecommendations.filter(r => r.taskId !== taskId).concat(fallback);
+  saveAppState();
   res.json(fallback);
 });
 
@@ -716,6 +796,8 @@ app.delete("/api/deliverables/files", (req, res) => {
       return tfPath !== targetPath && tfName !== fileNameLower;
     });
 
+    saveAppState();
+
     res.json({ success: true, message: `Successfully deleted deliverable ${relPath} and cleared task workspace references.` });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -780,6 +862,7 @@ app.get("/api/reports/download-csv", (req, res) => {
 // 5. Mount Vite integration and launch Server
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa"
@@ -794,7 +877,7 @@ async function startServer() {
   }
 
   app.listen(3000, "0.0.0.0", () => {
-    console.log("Full-stack Code Change workspace booted successfully up on port 3000");
+    console.log("Full-stack CodeShield Workspace booted successfully up on port 3000");
   });
 }
 
