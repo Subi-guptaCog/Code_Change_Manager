@@ -10,6 +10,33 @@ const getEnterpriseDir = (): string => {
     : path.join(process.cwd(), "enterprise-source");
 };
 
+// Helper to recursively delete empty sub-folders to keep clean tree
+const deleteEmptyDirectories = (dir: string) => {
+  try {
+    if (!fs.existsSync(dir)) return;
+    const stat = fs.statSync(dir);
+    if (!stat.isDirectory()) return;
+
+    let items = fs.readdirSync(dir);
+    for (const item of items) {
+      const fullPath = path.join(dir, item);
+      const isStateFile = ["tasks.json", "files.json", "conflicts.json", "recommendations.json", "seed-v4.lock", "seed-clean.lock"].includes(item.toLowerCase());
+      if (!isStateFile) {
+        deleteEmptyDirectories(fullPath);
+      }
+    }
+
+    // Check again
+    items = fs.readdirSync(dir);
+    if (items.length === 0 && dir !== getEnterpriseDir()) {
+      fs.rmdirSync(dir);
+      console.log(`Cleaned empty workspace subdirectory physically: ${dir}`);
+    }
+  } catch (e) {
+    console.warn("Directory clean error:", e);
+  }
+};
+
 // 1. Core State Store (Stateful Memory-Store)
 let codeTasks: any[] = [];
 let taskFiles: any[] = [];
@@ -61,243 +88,77 @@ const loadAppState = () => {
   }
 };
 
-// Seed default tasks and files to solve cold startup states
+// Seed default tasks and files - Clean Startup (no existing tasks)
 const seedTasksAndFiles = () => {
-  const lockPath = getStateFilePath("seed-v4.lock");
+  const lockPath = getStateFilePath("seed-clean.lock");
   const tasksPath = getStateFilePath("tasks.json");
 
-  if (fs.existsSync(lockPath) && fs.existsSync(tasksPath)) {
+  if (fs.existsSync(lockPath) || fs.existsSync(tasksPath)) {
     loadAppState();
     return;
   }
 
-  // Clean obsolete JSON state files to force correct seeded database snapshot
+  // Clear memory and clean obsolete JSON/CS files to force correct starting empty snapshot
+  codeTasks = [];
+  taskFiles = [];
+  taskConflicts = [];
+  aiRecommendations = [];
+
   try {
     const dir = getEnterpriseDir();
-    const filesToClean = ["tasks.json", "files.json", "conflicts.json", "recommendations.json"];
-    filesToClean.forEach(f => {
-      const fp = path.join(dir, f);
-      if (fs.existsSync(fp)) {
-        fs.unlinkSync(fp);
-      }
-    });
+    if (fs.existsSync(dir)) {
+      const deleteRecursive = (p: string) => {
+        if (fs.existsSync(p)) {
+          const stat = fs.statSync(p);
+          if (stat.isDirectory()) {
+            const items = fs.readdirSync(p);
+            items.forEach(item => deleteRecursive(path.join(p, item)));
+            try { fs.rmdirSync(p); } catch (e) {}
+          } else {
+            const isState = ["tasks.json", "files.json", "conflicts.json", "recommendations.json", "seed-v4.lock", "seed-clean.lock"].includes(path.basename(p).toLowerCase());
+            if (!isState) {
+              fs.unlinkSync(p);
+            }
+          }
+        }
+      };
+      const items = fs.readdirSync(dir);
+      items.forEach(item => {
+        const isState = ["tasks.json", "files.json", "conflicts.json", "recommendations.json", "seed-v4.lock", "seed-clean.lock"].includes(item.toLowerCase());
+        if (!isState) {
+          deleteRecursive(path.join(dir, item));
+        }
+      });
+    }
   } catch (e) {
     console.warn("Could not clean old state snapshot files:", e);
   }
 
-  const seedTask1001 = {
-    taskId: "TASK-1001",
-    baseBranch: "main",
-    featureBranch: "feature/billing-security",
-    description: "Enforce PCI-compliant database indexing and safe multi-tenant connection mappings.",
-    developer: "Diana Prince",
-    createdDate: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(),
-    repositoryUrl: "https://github.com/enterprise/billing-api.git",
-    commitId: "m3a9fcd2"
-  };
-
-  const seedTask1002 = {
-    taskId: "TASK-1002",
-    baseBranch: "main",
-    featureBranch: "feature/user-auth-jwt",
-    description: "Upgrade identity assertions and password strength validation telemetry.",
-    developer: "Marcus Chen",
-    createdDate: new Date(Date.now() - 1 * 24 * 3600 * 1000).toISOString(),
-    repositoryUrl: "https://github.com/enterprise/auth-service.git",
-    commitId: "m7f10b2a"
-  };
-
-  codeTasks = [seedTask1001, seedTask1002];
-
-  // Files for TASK-1001
-  const file1 = {
-    id: "f_1001_1",
-    taskId: "TASK-1001",
-    fileName: "BillingConnectionManager.cs",
-    path: "BillingConnectionManager.cs",
-    extension: "cs",
-    baseContent: `using System;
-using System.Data.SqlClient;
-
-namespace Enterprise.Billing
-{
-    public class BillingConnectionManager
-    {
-        private readonly string _connectionString;
-
-        public BillingConnectionManager(string connectionString)
-        {
-            _connectionString = connectionString;
-        }
-
-        public SqlConnection GetConnection()
-        {
-            // Standard Connection Factory with simple pooling
-            var conn = new SqlConnection(_connectionString);
-            conn.Open();
-            return conn;
-        }
-    }
-}`,
-    featureContent: `using System;
-using System.Data.SqlClient;
-
-namespace Enterprise.Billing
-{
-    public class BillingConnectionManager
-    {
-        private readonly string _connectionString;
-
-        public BillingConnectionManager(string connectionString)
-        {
-            _connectionString = connectionString;
-        }
-
-        public SqlConnection GetConnection()
-        {
-            // Secure connection initialization with strict PCI-compliance audit logging
-            if (string.IsNullOrEmpty(_connectionString))
-            {
-                throw new InvalidOperationException("Secure connection string must not be empty.");
-            }
-            var connection = new SqlConnection(_connectionString);
-            Console.WriteLine("[Audit] Securing SSL channel for multi-tenancy billing context.");
-            return connection;
-        }
-    }
-}`,
-    resolvedContent: "",
-    isConflict: true,
-    isResolved: false
-  };
-
-  const file2 = {
-    id: "f_1001_2",
-    taskId: "TASK-1001",
-    fileName: "DapperQueryHandler.cs",
-    path: "DapperQueryHandler.cs",
-    extension: "cs",
-    baseContent: `namespace Enterprise.Billing
-{
-    public class DapperQueryHandler
-    {
-        public string GetSelectBillingCommand()
-        {
-            return "SELECT * FROM SystemBillingRecords";
-        }
-    }
-}`,
-    featureContent: `namespace Enterprise.Billing
-{
-    public class DapperQueryHandler
-    {
-        public string GetSelectBillingCommand()
-        {
-            // Added indexes constraint for faster direct table scan query
-            return "SELECT RecordId, MerchantId, Amount FROM SystemBillingRecords WITH (INDEX(IX_Merchant_Billing))";
-        }
-    }
-}`,
-    resolvedContent: "",
-    isConflict: false,
-    isResolved: false
-  };
-
-  // Files for TASK-1002
-  const file3 = {
-    id: "f_1002_1",
-    taskId: "TASK-1002",
-    fileName: "PasswordStrengthEvaluator.cs",
-    path: "Security/PasswordStrengthEvaluator.cs",
-    extension: "cs",
-    baseContent: `namespace Enterprise.Auth
-{
-    public class PasswordStrengthEvaluator
-    {
-        public bool Validate(string password)
-        {
-            return password.Length >= 8;
-        }
-    }
-}`,
-    featureContent: `namespace Enterprise.Auth
-{
-    public class PasswordStrengthEvaluator
-    {
-        public bool Validate(string password)
-        {
-            // Password security upgrade
-            return password.Length >= 12 && password.Any(char.IsUpper) && password.Any(char.IsDigit);
-        }
-    }
-}`,
-    resolvedContent: "",
-    isConflict: false,
-    isResolved: false
-  };
-
-  taskFiles = [file1, file2, file3];
-
-  taskConflicts = [
-    {
-      id: "c_1001_1",
-      taskId: "TASK-1001",
-      fileId: "f_1001_1",
-      conflictText: file1.featureContent,
-      resolution: "",
-      auditTrail: [
-        "System: Initial scan detected parallel modification merge blockages in 'BillingConnectionManager.cs'."
-      ]
-    }
-  ];
-
-  aiRecommendations = [
-    {
-      id: "ai_1001_1",
-      taskId: "TASK-1001",
-      category: "Conflict Prediction",
-      recommendationText: "Conflict in GetConnection() can block immediate merging. Resolve by choosing the secure signature overload containing validation checks."
-    },
-    {
-      id: "ai_1001_2",
-      taskId: "TASK-1001",
-      category: "Code Quality",
-      recommendationText: "Explicit index forces in DapperQueryHandler can override SQL optimizer. Confirm IX_Merchant_Billing is index reconstructed."
-    }
-  ];
-
-  // Sync these files physically to enterprise-source folder
-  try {
-    const root = getEnterpriseDir();
-    fs.mkdirSync(root, { recursive: true });
-    
-    [file1, file2, file3].forEach(f => {
-      const fullPath = path.join(root, f.path);
-      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-      fs.writeFileSync(fullPath, f.featureContent, "utf-8");
-    });
-    console.log("Successfully seeded task files in physical deliverables folders on boot.");
-  } catch (err) {
-    console.error("Failed to seed physical deliverables folder files:", err);
-  }
-
-  // Save newly seeded app state
   saveAppState();
 
-  // Write migration lock file
   try {
-    fs.writeFileSync(getStateFilePath("seed-v4.lock"), "seeded", "utf-8");
+    fs.mkdirSync(getEnterpriseDir(), { recursive: true });
+    fs.writeFileSync(getStateFilePath("seed-clean.lock"), "clean", "utf-8");
   } catch (err) {
-    console.error("Failed to write seed-v4.lock:", err);
+    console.error("Failed to write seed-clean.lock:", err);
   }
 };
 
 // Execute Seeding on startup
 seedTasksAndFiles();
 
-// 2. Initialize Express
+// 2. Initialize Express with clean JSON and urlencoded limits
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+// Middleware to sync persistent state properly on every api call
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api")) {
+    loadAppState();
+  }
+  next();
+});
 
 // Initialize Gemini API
 const geminiApiKey = process.env.GEMINI_API_KEY || "";
@@ -431,6 +292,9 @@ app.delete("/api/tasks/:taskId", (req, res) => {
   aiRecommendations = aiRecommendations.filter(r => !matchTask(r.taskId));
   saveAppState();
 
+  // Clean up any empty directory structures leftover from deleted task files
+  deleteEmptyDirectories(getEnterpriseDir());
+
   res.json({
     success: true,
     message: `Task ${taskId} and all its associated file snapshots, conflicts, and recommendations have been permanently deleted.`
@@ -507,6 +371,9 @@ app.delete("/api/files/:fileId", (req, res) => {
   }
 
   saveAppState();
+
+  // Clean empty folders leftover
+  deleteEmptyDirectories(getEnterpriseDir());
 
   res.json({
     success: true,
@@ -747,7 +614,7 @@ app.get("/api/deliverables/files", (req, res) => {
         const baseContent = matchingFile ? matchingFile.baseContent : content;
         filesList.push({
           name: item,
-          path: relative,
+          path: relative.replace(/\\/g, "/"),
           content,
           baseContent
         });
@@ -821,6 +688,9 @@ app.delete("/api/deliverables/files", (req, res) => {
     });
 
     saveAppState();
+
+    // Clean empty folders leftover
+    deleteEmptyDirectories(getEnterpriseDir());
 
     res.json({ success: true, message: `Successfully deleted deliverable ${relPath} and cleared task workspace references.` });
   } catch (err: any) {

@@ -125,6 +125,17 @@ export default function App() {
   // Drag and Drop State
   const [isDragging, setIsDragging] = useState(false);
 
+  // LocalStorage state auto-synchronizers
+  useEffect(() => {
+    localStorage.setItem("code_tasks", JSON.stringify(tasks));
+  }, [tasks]);
+
+  useEffect(() => {
+    if (selectedTask) {
+      localStorage.setItem(`task_files_${selectedTask.taskId}`, JSON.stringify(files));
+    }
+  }, [files, selectedTask]);
+
   // Fetch initial tasks
   useEffect(() => {
     fetchTasks();
@@ -136,12 +147,39 @@ export default function App() {
     try {
       const res = await fetch("/api/tasks");
       const data = await res.json();
-      setTasks(data);
-      if (data.length > 0) {
-        handleSelectTask(data[0]);
+
+      const cachedTasksStr = localStorage.getItem("code_tasks");
+      const cachedTasks = cachedTasksStr ? JSON.parse(cachedTasksStr) : [];
+
+      let resolvedTasks = data;
+      if (data.length === 0 && cachedTasks.length > 0) {
+        resolvedTasks = cachedTasks;
+        // Sync tasks back to server background store
+        for (const t of cachedTasks) {
+          await fetch("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(t)
+          }).catch(console.error);
+        }
+      }
+
+      setTasks(resolvedTasks);
+      if (resolvedTasks.length > 0) {
+        const savedSelectedTaskId = localStorage.getItem("selected_task_id");
+        const found = resolvedTasks.find((t: any) => t.taskId === savedSelectedTaskId);
+        handleSelectTask(found || resolvedTasks[0]);
       }
     } catch (e) {
       logAudit("Error: Failed to fetch tasks from ASP.NET REST mockup");
+      const cachedTasksStr = localStorage.getItem("code_tasks");
+      if (cachedTasksStr) {
+        const cachedTasks = JSON.parse(cachedTasksStr);
+        setTasks(cachedTasks);
+        if (cachedTasks.length > 0) {
+          handleSelectTask(cachedTasks[0]);
+        }
+      }
     }
   };
 
@@ -185,18 +223,41 @@ export default function App() {
 
   const handleSelectTask = async (task: CodeTask) => {
     setSelectedTask(task);
+    localStorage.setItem("selected_task_id", task.taskId);
     setSelectedFile(null);
     setBaseCode("");
     setFeatureCode("");
     setDiffAnalysis(null);
     try {
       const filesRes = await fetch(`/api/tasks/${task.taskId}/files`);
-      const filesData = await filesRes.json();
-      setFiles(filesData);
+      const filesData = filesRes.ok ? await filesRes.json() : [];
 
+      const cachedFilesStr = localStorage.getItem(`task_files_${task.taskId}`);
+      const cachedFiles = cachedFilesStr ? JSON.parse(cachedFilesStr) : [];
+
+      let resolvedFiles = filesData;
+      if (filesData.length === 0 && cachedFiles.length > 0) {
+        resolvedFiles = cachedFiles;
+        // Sync them to server background store
+        for (const f of cachedFiles) {
+          await fetch(`/api/tasks/${task.taskId}/files`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(f)
+          }).catch(console.error);
+        }
+      }
+
+      setFiles(resolvedFiles);
       logAudit(`Switched active workspace to Task ID: ${task.taskId}`);
     } catch (err) {
       logAudit(`Error loading workspace snapshot elements for ${task.taskId}`);
+      const cachedFilesStr = localStorage.getItem(`task_files_${task.taskId}`);
+      if (cachedFilesStr) {
+        setFiles(JSON.parse(cachedFilesStr));
+      } else {
+        setFiles([]);
+      }
     }
   };
 
