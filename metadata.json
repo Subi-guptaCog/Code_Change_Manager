@@ -1,6 +1,0 @@
-{
-  "name": "CodeShield Workspace",
-  "description": "Enterprise-grade code change tracking, visual side-by-side comparison, three-way merge conflict resolution, and Gemini-powered smart code review suggestions.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
