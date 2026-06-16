@@ -129,7 +129,6 @@ export default function App() {
   useEffect(() => {
     fetchTasks();
     fetchMetrics();
-    fetchDeliverables();
   }, []);
 
   const fetchTasks = async () => {
@@ -161,9 +160,10 @@ export default function App() {
     }
   };
 
-  const fetchDeliverables = async (autoSelectPath?: string) => {
+  const fetchDeliverables = async (autoSelectPath?: string, customTaskId?: string) => {
     try {
-      const res = await fetch("/api/deliverables/files");
+      const tid = customTaskId || selectedTask?.taskId || "";
+      const res = await fetch(`/api/deliverables/files?taskId=${encodeURIComponent(tid)}`);
       const data = await res.json();
       setDeliverableFiles(data);
       if (data.length > 0) {
@@ -201,6 +201,7 @@ export default function App() {
       const filesData = filesRes.ok ? await filesRes.json() : [];
       setFiles(filesData);
       logAudit(`Switched active workspace to Task ID: ${task.taskId}`);
+      fetchDeliverables(undefined, task.taskId);
     } catch (err) {
       logAudit(`Error loading workspace snapshot elements for ${task.taskId}`);
       setFiles([]);
@@ -301,9 +302,10 @@ export default function App() {
               setBaseCode("");
               setFeatureCode("");
               setDiffAnalysis(null);
+              setDeliverableFiles([]);
+              setSelectedDeliverable(null);
             }
             fetchMetrics();
-            fetchDeliverables();
           } else {
             logAudit(`Error purging task record: ${data.error || "unknown error"}`);
           }
@@ -356,7 +358,6 @@ export default function App() {
         handleSelectTask(selectedTask);
       }
       fetchMetrics();
-      fetchDeliverables();
     } catch (e) {
       logAudit("Error resolving merge conflict on Express server.");
     }
@@ -411,7 +412,7 @@ export default function App() {
             }
             
             fetchMetrics();
-            fetchDeliverables(uploadedFile.path);
+            fetchDeliverables(uploadedFile.path, selectedTask?.taskId);
           } else {
             if (uploadRes.status === 413) {
               logAudit(`Error uploading file '${file.name}': Vercel 4.5MB Serverless limit exceeded (request entity too large).`);
@@ -539,7 +540,7 @@ export default function App() {
         }
         runCompare(baseCode, contentToSave, selectedFile.fileName);
         fetchMetrics();
-        fetchDeliverables();
+        fetchDeliverables(undefined, selectedTask?.taskId);
       } else {
         logAudit(`Error saving snapshot: ${data.error || "unknown error"}`);
       }
