@@ -852,7 +852,7 @@ const getDashboardMetricsFromDb = async (): Promise<any> => {
   }
 };
 
-const getDeliverablesFromDb = async (): Promise<any[]> => {
+const getDeliverablesFromDb = async (taskId?: string): Promise<any[]> => {
   const pool = await getDbPool();
   if (!pool) {
     const rootDir = getEnterpriseDir();
@@ -875,8 +875,12 @@ const getDeliverablesFromDb = async (): Promise<any[]> => {
           const matchingFile = taskFiles.find(tf => {
             const p1 = String(tf.path || "").replace(/\\/g, "/").toLowerCase();
             const p2 = String(relative || "").replace(/\\/g, "/").toLowerCase();
-            return p1 === p2;
+            const taskMatch = !taskId || String(tf.taskId || "").toUpperCase() === taskId.toUpperCase();
+            return p1 === p2 && taskMatch;
           });
+          
+          if (taskId && !matchingFile) continue;
+
           filesList.push({
             name: item,
             path: relative.replace(/\\/g, "/"),
@@ -890,7 +894,16 @@ const getDeliverablesFromDb = async (): Promise<any[]> => {
     return filesList;
   }
 
-  const result = await pool.request().query("SELECT * FROM dbo.TaskFiles");
+  const mssql = await loadMssql();
+  const req = pool.request();
+  let query = "SELECT * FROM dbo.TaskFiles";
+  
+  if (taskId) {
+    req.input("TaskId", mssql.NVarChar(100), taskId);
+    query = "SELECT * FROM dbo.TaskFiles WHERE TaskId = @TaskId OR 'TASK-' + UPPER(TaskId) = @TaskId OR UPPER(TaskId) = 'TASK-' + @TaskId";
+  }
+
+  const result = await req.query(query);
   return result.recordset.map((row: any) => ({
     name: row.FileName,
     path: row.Path,
@@ -1477,8 +1490,9 @@ Always return a raw valid JSON array. Do not include markdown tags, do not wrap 
 
 // Serve list of written deliverables from physical filesystem
 app.get("/api/deliverables/files", async (req, res) => {
+  const { taskId } = req.query as { taskId?: string };
   try {
-    const list = await getDeliverablesFromDb();
+    const list = await getDeliverablesFromDb(taskId || undefined);
     res.json(list);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
