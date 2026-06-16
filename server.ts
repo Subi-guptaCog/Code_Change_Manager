@@ -2109,6 +2109,7 @@ async function startServer() {
       server: { middlewareMode: true },
       appType: "spa"
     });
+    //cpndole testing
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
