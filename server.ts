@@ -1,7 +1,11 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
+
+// Load environment variables from .env file
+dotenv.config();
 
 // Helper for Vercel/Serverless compatible writable folder
 const getEnterpriseDir = (): string => {
@@ -343,29 +347,49 @@ namespace CheckoutService.Services
   }
 ];
 
+// Simple utility to sanitize and clean environment variables (removing literal quotes and placeholders)
+const cleanEnvVar = (val: string | undefined): string => {
+  if (!val) return "";
+  let s = val.trim();
+  if (s.startsWith('"') && s.endsWith('"')) {
+    s = s.slice(1, -1);
+  }
+  if (s.startsWith("'") && s.endsWith("'")) {
+    s = s.slice(1, -1);
+  }
+  s = s.trim();
+  if (
+    s.toLowerCase().includes("your_") || 
+    s.toLowerCase().includes("placeholder") || 
+    s === "MY_GEMINI_API_KEY" ||
+    s === "MY_APP_URL"
+  ) {
+    return "";
+  }
+  return s;
+};
+
 // Check if MSSQL is configured in environment
 const isMssqlConfigured = (): boolean => {
-  return !!(
-    process.env.DB_CONNECTION_STRING ||
-    process.env.MSSQL_CONNECTION_STRING ||
-    (process.env.DB_SERVER && process.env.DB_USER)
-  );
+  const connectionString = cleanEnvVar(process.env.DB_CONNECTION_STRING || process.env.MSSQL_CONNECTION_STRING);
+  const server = cleanEnvVar(process.env.DB_SERVER);
+  const user = cleanEnvVar(process.env.DB_USER);
+  return !!(connectionString || (server && user));
 };
 
 // Check if Cloudflare D1 is configured in environment
 const isD1Configured = (): boolean => {
-  return !!(
-    process.env.CLOUDFLARE_ACCOUNT_ID &&
-    process.env.CLOUDFLARE_DATABASE_ID &&
-    process.env.CLOUDFLARE_API_TOKEN
-  );
+  const accountId = cleanEnvVar(process.env.CLOUDFLARE_ACCOUNT_ID);
+  const databaseId = cleanEnvVar(process.env.CLOUDFLARE_DATABASE_ID);
+  const apiToken = cleanEnvVar(process.env.CLOUDFLARE_API_TOKEN);
+  return !!(accountId && databaseId && apiToken);
 };
 
 // Execute standard SQL statement via the Cloudflare D1 HTTP REST API
 const executeD1Query = async (sql: string, params: any[] = []): Promise<any[]> => {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-  const databaseId = process.env.CLOUDFLARE_DATABASE_ID;
-  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+  const accountId = cleanEnvVar(process.env.CLOUDFLARE_ACCOUNT_ID);
+  const databaseId = cleanEnvVar(process.env.CLOUDFLARE_DATABASE_ID);
+  const apiToken = cleanEnvVar(process.env.CLOUDFLARE_API_TOKEN);
 
   const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`;
   const fetchLibrary = (global as any).fetch || fetch;
@@ -504,19 +528,19 @@ const loadMssql = async () => {
 };
 
 const getMssqlConfig = () => {
-  const connectionString = process.env.DB_CONNECTION_STRING || process.env.MSSQL_CONNECTION_STRING;
+  const connectionString = cleanEnvVar(process.env.DB_CONNECTION_STRING || process.env.MSSQL_CONNECTION_STRING);
   if (connectionString) {
     return connectionString;
   }
   return {
-    user: process.env.DB_USER || "sa",
-    password: process.env.DB_PASSWORD || "",
-    server: process.env.DB_SERVER || "",
-    port: parseInt(process.env.DB_PORT || "1433", 10),
-    database: process.env.DB_NAME || "CodeChangeManagerDb",
+    user: cleanEnvVar(process.env.DB_USER) || "sa",
+    password: cleanEnvVar(process.env.DB_PASSWORD) || "",
+    server: cleanEnvVar(process.env.DB_SERVER) || "",
+    port: parseInt(cleanEnvVar(process.env.DB_PORT) || "1433", 10),
+    database: cleanEnvVar(process.env.DB_NAME) || "CodeChangeManagerDb",
     options: {
       encrypt: true,
-      trustServerCertificate: process.env.DB_TRUST_SERVER_CERTIFICATE !== "false"
+      trustServerCertificate: cleanEnvVar(process.env.DB_TRUST_SERVER_CERTIFICATE) !== "false"
     },
     connectionTimeout: 15000,
     requestTimeout: 15000
@@ -1336,20 +1360,41 @@ const loadAppState = () => {
     const recsPath = getStateFilePath("recommendations.json");
 
     if (fs.existsSync(tasksPath)) {
-      codeTasks = JSON.parse(fs.readFileSync(tasksPath, "utf-8"));
+      try {
+        codeTasks = JSON.parse(fs.readFileSync(tasksPath, "utf-8"));
+      } catch {
+        codeTasks = [...DEFAULT_TASKS];
+      }
     } else {
+      codeTasks = [...DEFAULT_TASKS];
+    }
+    if (!Array.isArray(codeTasks) || codeTasks.length === 0) {
       codeTasks = [...DEFAULT_TASKS];
     }
     
     if (fs.existsSync(filesPath)) {
-      taskFiles = JSON.parse(fs.readFileSync(filesPath, "utf-8"));
+      try {
+        taskFiles = JSON.parse(fs.readFileSync(filesPath, "utf-8"));
+      } catch {
+        taskFiles = [...DEFAULT_FILES];
+      }
     } else {
+      taskFiles = [...DEFAULT_FILES];
+    }
+    if (!Array.isArray(taskFiles) || taskFiles.length === 0) {
       taskFiles = [...DEFAULT_FILES];
     }
     
     if (fs.existsSync(conflictsPath)) {
-      taskConflicts = JSON.parse(fs.readFileSync(conflictsPath, "utf-8"));
+      try {
+        taskConflicts = JSON.parse(fs.readFileSync(conflictsPath, "utf-8"));
+      } catch {
+        taskConflicts = [];
+      }
     } else {
+      taskConflicts = [];
+    }
+    if (!Array.isArray(taskConflicts) || taskConflicts.length === 0) {
       taskConflicts = DEFAULT_FILES.filter(f => f.isConflict).map(f => ({
         id: "c_" + f.id.replace("file_", ""),
         taskId: f.taskId,
@@ -1363,8 +1408,15 @@ const loadAppState = () => {
     }
     
     if (fs.existsSync(recsPath)) {
-      aiRecommendations = JSON.parse(fs.readFileSync(recsPath, "utf-8"));
+      try {
+        aiRecommendations = JSON.parse(fs.readFileSync(recsPath, "utf-8"));
+      } catch {
+        aiRecommendations = [];
+      }
     } else {
+      aiRecommendations = [];
+    }
+    if (!Array.isArray(aiRecommendations) || aiRecommendations.length === 0) {
       aiRecommendations = [
         {
           id: "seed_r1",
@@ -1524,12 +1576,29 @@ function detectDifferences(base: string, modified: string) {
 
 // 4. API Endpoints
 app.get("/api/db-status", (req, res) => {
+  const d1Details = {
+    CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID ? "Configured" : "Missing",
+    CLOUDFLARE_DATABASE_ID: process.env.CLOUDFLARE_DATABASE_ID ? "Configured" : "Missing",
+    CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN ? "Configured" : "Missing",
+  };
+
   if (isD1Configured()) {
-    res.json({ type: "Cloudflare D1 Serverless", status: "Connected" });
+    res.json({ 
+      type: "Cloudflare D1 Serverless", 
+      status: "Connected",
+      details: d1Details
+    });
   } else if (isMssqlConfigured()) {
-    res.json({ type: "Microsoft SQL Server", status: "Connected" });
+    res.json({ 
+      type: "Microsoft SQL Server", 
+      status: "Connected" 
+    });
   } else {
-    res.json({ type: "Local File System Fail-safe Storage", status: "Connected" });
+    res.json({ 
+      type: "Local File System Fail-safe Storage", 
+      status: "Connected",
+      details: d1Details
+    });
   }
 });
 
