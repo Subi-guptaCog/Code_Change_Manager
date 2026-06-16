@@ -1523,6 +1523,16 @@ function detectDifferences(base: string, modified: string) {
 }
 
 // 4. API Endpoints
+app.get("/api/db-status", (req, res) => {
+  if (isD1Configured()) {
+    res.json({ type: "Cloudflare D1 Serverless", status: "Connected" });
+  } else if (isMssqlConfigured()) {
+    res.json({ type: "Microsoft SQL Server", status: "Connected" });
+  } else {
+    res.json({ type: "Local File System Fail-safe Storage", status: "Connected" });
+  }
+});
+
 app.get("/api/tasks", async (req, res) => {
   try {
     const list = await getCodeTasksFromDb();
