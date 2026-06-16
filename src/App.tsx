@@ -118,8 +118,7 @@ export default function App() {
 
   // Audits tracking UI
   const [auditTrails, setAuditTrails] = useState<string[]>([
-    "System: CodeShield Workspace initialized successfully.",
-    "Database: Connected dynamically to Microsoft SQL Server snapshot simulation."
+    "System: CodeShield Workspace initialized successfully."
   ]);
 
   // Drag and Drop State
@@ -127,14 +126,30 @@ export default function App() {
 
   // Fetch initial tasks
   useEffect(() => {
+    fetchDbStatus();
     fetchTasks();
     fetchMetrics();
   }, []);
+
+  const fetchDbStatus = async () => {
+    try {
+      const res = await fetch("/api/db-status");
+      const data = await res.json();
+      logAudit(`Database: Connected dynamically to ${data.type || "Local File System Fail-safe Storage"}.`);
+    } catch {
+      logAudit("Database: Connected dynamically to Local File System Fail-safe Storage.");
+    }
+  };
 
   const fetchTasks = async () => {
     try {
       const res = await fetch("/api/tasks");
       const data = await res.json();
+
+      if (!res.ok) {
+        logAudit(`Error: Failed to fetch tasks from database store - ${data.error || "Unknown server error"}`);
+        return;
+      }
 
       setTasks(data);
       if (data.length > 0) {
@@ -146,7 +161,7 @@ export default function App() {
         setFiles([]);
       }
     } catch (e) {
-      logAudit("Error: Failed to fetch tasks from database store");
+      logAudit("Error: Failed to fetch tasks. Check your network or your database credentials.");
     }
   };
 
