@@ -352,6 +352,145 @@ const isMssqlConfigured = (): boolean => {
   );
 };
 
+// Check if Cloudflare D1 is configured in environment
+const isD1Configured = (): boolean => {
+  return !!(
+    process.env.CLOUDFLARE_ACCOUNT_ID &&
+    process.env.CLOUDFLARE_DATABASE_ID &&
+    process.env.CLOUDFLARE_API_TOKEN
+  );
+};
+
+// Execute standard SQL statement via the Cloudflare D1 HTTP REST API
+const executeD1Query = async (sql: string, params: any[] = []): Promise<any[]> => {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const databaseId = process.env.CLOUDFLARE_DATABASE_ID;
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`;
+  const fetchLibrary = (global as any).fetch || fetch;
+  
+  const response = await fetchLibrary(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ sql, params })
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Cloudflare D1 query failed (Status ${response.status}): ${text}`);
+  }
+
+  const data: any = await response.json();
+  if (!data.success) {
+    throw new Error(`Cloudflare D1 query errors: ${JSON.stringify(data.errors)}`);
+  }
+
+  const queryResult = data.result?.[0];
+  if (!queryResult) {
+    return [];
+  }
+
+  if (!queryResult.success) {
+    throw new Error(`Cloudflare D1 query execution failed: ${JSON.stringify(queryResult.errors || data.errors)}`);
+  }
+
+  return queryResult.results || [];
+};
+
+// Auto-creates SQLite-compatible tables inside Cloudflare D1 database and seeds from core deck if empty
+const initD1Tables = async () => {
+  try {
+    console.log("Setting up Cloudflare D1 tables...");
+    
+    await executeD1Query(`
+      CREATE TABLE IF NOT EXISTS CodeTasks (
+        TaskId TEXT PRIMARY KEY,
+        BaseBranch TEXT,
+        FeatureBranch TEXT,
+        Description TEXT,
+        Developer TEXT,
+        CreatedDate TEXT,
+        RepositoryUrl TEXT,
+        CommitId TEXT
+      )
+    `);
+
+    await executeD1Query(`
+      CREATE TABLE IF NOT EXISTS TaskFiles (
+        Id TEXT PRIMARY KEY,
+        TaskId TEXT,
+        FileName TEXT,
+        Path TEXT,
+        Extension TEXT,
+        BaseContent TEXT,
+        FeatureContent TEXT,
+        ResolvedContent TEXT,
+        IsConflict INTEGER,
+        IsResolved INTEGER
+      )
+    `);
+
+    await executeD1Query(`
+      CREATE TABLE IF NOT EXISTS TaskConflicts (
+        Id TEXT PRIMARY KEY,
+        TaskId TEXT,
+        FileId TEXT,
+        ConflictText TEXT,
+        Resolution TEXT,
+        AuditTrail TEXT
+      )
+    `);
+
+    await executeD1Query(`
+      CREATE TABLE IF NOT EXISTS AiRecommendations (
+        Id TEXT PRIMARY KEY,
+        TaskId TEXT,
+        Category TEXT,
+        RecommendationText TEXT
+      )
+    `);
+
+    console.log("Verified and constructed D1 database tables.");
+
+    const checkTasks = await executeD1Query("SELECT COUNT(*) as cnt FROM CodeTasks");
+    const count = checkTasks[0]?.cnt ?? checkTasks[0]?.["COUNT(*)"] ?? 0;
+    
+    if (count === 0) {
+      console.log("D1 Database tables empty. Loading core pre-seeded task/conflict snaps...");
+      
+      for (const t of DEFAULT_TASKS) {
+        await executeD1Query(
+          "INSERT INTO CodeTasks (TaskId, BaseBranch, FeatureBranch, Description, Developer, CreatedDate, RepositoryUrl, CommitId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          [t.taskId, t.baseBranch, t.featureBranch, t.description, t.developer, t.createdDate, t.repositoryUrl, t.commitId]
+        );
+      }
+
+      for (const f of DEFAULT_FILES) {
+        await executeD1Query(
+          "INSERT INTO TaskFiles (Id, TaskId, FileName, Path, Extension, BaseContent, FeatureContent, ResolvedContent, IsConflict, IsResolved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          [f.id, f.taskId, f.fileName, f.path, f.extension, f.baseContent, f.featureContent, f.resolvedContent, f.isConflict ? 1 : 0, f.isResolved ? 1 : 0]
+        );
+
+        if (f.isConflict) {
+          const cid = "c_" + f.id.replace("file_", "");
+          const audit = JSON.stringify([`System: Merge conflicts pre-seeded on startup inside ${f.fileName}.`]);
+          await executeD1Query(
+            "INSERT INTO TaskConflicts (Id, TaskId, FileId, ConflictText, Resolution, AuditTrail) VALUES (?, ?, ?, ?, ?, ?)",
+            [cid, f.taskId, f.id, f.featureContent || "", f.resolvedContent || "", audit]
+          );
+        }
+      }
+      console.log("Core seed metadata set up successfully on D1 storage!");
+    }
+  } catch (err) {
+    console.error("Cloudflare D1 tables setup failure:", err);
+  }
+};
+
 let dbPool: any = null;
 let mssqlError: string | null = null;
 let mssqlLib: any = null;
@@ -478,6 +617,20 @@ const seedDbIfEmpty = async (pool: any) => {
 
 // DB Helper functions as lazy wrappers for all API models
 const getCodeTasksFromDb = async (): Promise<any[]> => {
+  if (isD1Configured()) {
+    const rows = await executeD1Query("SELECT * FROM CodeTasks ORDER BY CreatedDate DESC");
+    return rows.map((row: any) => ({
+      taskId: row.TaskId || row.taskId,
+      baseBranch: row.BaseBranch || row.baseBranch,
+      featureBranch: row.FeatureBranch || row.featureBranch,
+      description: row.Description || row.description,
+      developer: row.Developer || row.developer,
+      createdDate: row.CreatedDate || row.createdDate,
+      repositoryUrl: row.RepositoryUrl || row.repositoryUrl,
+      commitId: row.CommitId || row.commitId
+    }));
+  }
+
   const pool = await getDbPool();
   if (!pool) return codeTasks;
   const result = await pool.request().query("SELECT * FROM dbo.CodeTasks ORDER BY CreatedDate DESC");
@@ -494,6 +647,26 @@ const getCodeTasksFromDb = async (): Promise<any[]> => {
 };
 
 const saveCodeTaskToDb = async (task: any): Promise<boolean> => {
+  if (isD1Configured()) {
+    const exists = await executeD1Query("SELECT 1 FROM CodeTasks WHERE UPPER(TaskId) = UPPER(?)", [task.taskId]);
+    if (exists.length === 0) {
+      await executeD1Query(
+        "INSERT INTO CodeTasks (TaskId, BaseBranch, FeatureBranch, Description, Developer, CreatedDate, RepositoryUrl, CommitId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          task.taskId,
+          task.baseBranch || "main",
+          task.featureBranch || "",
+          task.description || "",
+          task.developer || "Lead Developer",
+          task.createdDate || new Date().toISOString(),
+          task.repositoryUrl || "https://github.com/enterprise/source.git",
+          task.commitId || ""
+        ]
+      );
+    }
+    return true;
+  }
+
   const pool = await getDbPool();
   if (!pool) {
     const exists = codeTasks.some(t => String(t.taskId).toUpperCase() === String(task.taskId).toUpperCase());
@@ -526,6 +699,14 @@ const saveCodeTaskToDb = async (task: any): Promise<boolean> => {
 };
 
 const deleteCodeTaskFromDb = async (taskId: string): Promise<boolean> => {
+  if (isD1Configured()) {
+    await executeD1Query("DELETE FROM TaskConflicts WHERE UPPER(TaskId) = UPPER(?)", [taskId]);
+    await executeD1Query("DELETE FROM TaskFiles WHERE UPPER(TaskId) = UPPER(?)", [taskId]);
+    await executeD1Query("DELETE FROM AiRecommendations WHERE UPPER(TaskId) = UPPER(?)", [taskId]);
+    await executeD1Query("DELETE FROM CodeTasks WHERE UPPER(TaskId) = UPPER(?)", [taskId]);
+    return true;
+  }
+
   const pool = await getDbPool();
   if (!pool) {
     const targetId = taskId.toUpperCase();
@@ -555,6 +736,25 @@ const deleteCodeTaskFromDb = async (taskId: string): Promise<boolean> => {
 };
 
 const getTaskFilesFromDb = async (taskId: string): Promise<any[]> => {
+  if (isD1Configured()) {
+    const rows = await executeD1Query(
+      "SELECT * FROM TaskFiles WHERE UPPER(TaskId) = UPPER(?) OR 'TASK-' || UPPER(TaskId) = UPPER(?) OR UPPER(TaskId) = 'TASK-' || UPPER(?)",
+      [taskId, taskId, taskId]
+    );
+    return rows.map((row: any) => ({
+      id: row.Id || row.id,
+      taskId: row.TaskId || row.taskId,
+      fileName: row.FileName || row.fileName,
+      path: row.Path || row.path,
+      extension: row.Extension || row.extension,
+      baseContent: row.BaseContent || row.baseContent,
+      featureContent: row.FeatureContent || row.featureContent,
+      resolvedContent: row.ResolvedContent || row.resolvedContent,
+      isConflict: !!(row.IsConflict ?? row.isConflict),
+      isResolved: !!(row.IsResolved ?? row.isResolved)
+    }));
+  }
+
   const pool = await getDbPool();
   const targetId = taskId.toUpperCase();
   if (!pool) {
@@ -584,6 +784,79 @@ const getTaskFilesFromDb = async (taskId: string): Promise<any[]> => {
 };
 
 const saveTaskFileToDb = async (file: any): Promise<boolean> => {
+  if (isD1Configured()) {
+    // Ensure Task exists
+    const taskExists = await executeD1Query("SELECT 1 FROM CodeTasks WHERE UPPER(TaskId) = UPPER(?)", [file.taskId]);
+    if (taskExists.length === 0) {
+      await executeD1Query(
+        "INSERT INTO CodeTasks (TaskId, BaseBranch, FeatureBranch, Description, Developer, CreatedDate, RepositoryUrl, CommitId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [file.taskId, "main", "feature-" + String(file.taskId).toLowerCase(), "Auto-seeded task during file save", "Lead Developer", new Date().toISOString(), "https://github.com/enterprise/source.git", "init"]
+      );
+    }
+
+    // Insert or update file snapshot
+    const fileExists = await executeD1Query("SELECT 1 FROM TaskFiles WHERE Id = ?", [file.id]);
+    if (fileExists.length > 0) {
+      await executeD1Query(
+        "UPDATE TaskFiles SET FileName = ?, Path = ?, Extension = ?, BaseContent = ?, FeatureContent = ?, ResolvedContent = ?, IsConflict = ?, IsResolved = ? WHERE Id = ?",
+        [
+          file.fileName,
+          file.path,
+          file.extension,
+          file.baseContent || "",
+          file.featureContent || "",
+          file.resolvedContent || "",
+          file.isConflict ? 1 : 0,
+          file.isResolved ? 1 : 0,
+          file.id
+        ]
+      );
+    } else {
+      await executeD1Query(
+        "INSERT INTO TaskFiles (Id, TaskId, FileName, Path, Extension, BaseContent, FeatureContent, ResolvedContent, IsConflict, IsResolved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          file.id,
+          file.taskId,
+          file.fileName,
+          file.path,
+          file.extension,
+          file.baseContent || "",
+          file.featureContent || "",
+          file.resolvedContent || "",
+          file.isConflict ? 1 : 0,
+          file.isResolved ? 1 : 0
+        ]
+      );
+    }
+
+    // Insert or update conflicts
+    if (file.isConflict) {
+      const cid = "c_" + String(file.id).replace("file_", "");
+      const conflictExists = await executeD1Query("SELECT 1 FROM TaskConflicts WHERE FileId = ?", [file.id]);
+      const auditTrail = JSON.stringify([
+        `System: Merge conflicts detected on file upload inside ${file.fileName}`
+      ]);
+
+      if (conflictExists.length > 0) {
+        await executeD1Query(
+          "UPDATE TaskConflicts SET ConflictText = ?, Resolution = ? WHERE FileId = ?",
+          [file.featureContent || "", file.resolvedContent || "", file.id]
+        );
+      } else {
+        await executeD1Query(
+          "INSERT INTO TaskConflicts (Id, TaskId, FileId, ConflictText, Resolution, AuditTrail) VALUES (?, ?, ?, ?, ?, ?)",
+          [cid, file.taskId, file.id, file.featureContent || "", file.resolvedContent || "", auditTrail]
+        );
+      }
+    } else {
+      await executeD1Query(
+        "UPDATE TaskConflicts SET Resolution = ? WHERE FileId = ?",
+        [file.featureContent || "", file.id]
+      );
+    }
+    return true;
+  }
+
   const pool = await getDbPool();
   if (!pool) {
     const idx = taskFiles.findIndex(f => f.id === file.id);
@@ -674,6 +947,12 @@ const saveTaskFileToDb = async (file: any): Promise<boolean> => {
 };
 
 const deleteTaskFileFromDb = async (fileId: string): Promise<boolean> => {
+  if (isD1Configured()) {
+    await executeD1Query("DELETE FROM TaskConflicts WHERE FileId = ?", [fileId]);
+    await executeD1Query("DELETE FROM TaskFiles WHERE Id = ?", [fileId]);
+    return true;
+  }
+
   const pool = await getDbPool();
   if (!pool) {
     taskFiles = taskFiles.filter(f => f.id !== fileId);
@@ -691,6 +970,24 @@ const deleteTaskFileFromDb = async (fileId: string): Promise<boolean> => {
 };
 
 const getTaskFileByIdFromDb = async (fileId: string): Promise<any | null> => {
+  if (isD1Configured()) {
+    const rows = await executeD1Query("SELECT * FROM TaskFiles WHERE Id = ?", [fileId]);
+    if (rows.length === 0) return null;
+    const row = rows[0];
+    return {
+      id: row.Id || row.id,
+      taskId: row.TaskId || row.taskId,
+      fileName: row.FileName || row.fileName,
+      path: row.Path || row.path,
+      extension: row.Extension || row.extension,
+      baseContent: row.BaseContent || row.baseContent,
+      featureContent: row.FeatureContent || row.featureContent,
+      resolvedContent: row.ResolvedContent || row.resolvedContent,
+      isConflict: !!(row.IsConflict ?? row.isConflict),
+      isResolved: !!(row.IsResolved ?? row.isResolved)
+    };
+  }
+
   const pool = await getDbPool();
   if (!pool) {
     return taskFiles.find(f => f.id === fileId) || null;
@@ -718,6 +1015,27 @@ const getTaskFileByIdFromDb = async (fileId: string): Promise<any | null> => {
 };
 
 const resolveMergeConflictInDb = async (fileId: string, resolution: string, actionName: string): Promise<any | null> => {
+  if (isD1Configured()) {
+    await executeD1Query("UPDATE TaskFiles SET ResolvedContent = ?, IsResolved = 1 WHERE Id = ?", [resolution, fileId]);
+    
+    const auditMessage = `Developer resolved conflict dynamically using command: "Accept ${actionName || 'Manual'}" at ${new Date().toLocaleString()}`;
+    const rows = await executeD1Query("SELECT AuditTrail FROM TaskConflicts WHERE FileId = ?", [fileId]);
+    
+    let auditTrail = [];
+    if (rows.length > 0 && (rows[0].AuditTrail || rows[0].auditTrail)) {
+      const trailRaw = rows[0].AuditTrail || rows[0].auditTrail;
+      try {
+        auditTrail = JSON.parse(trailRaw);
+      } catch (_) {
+        auditTrail = [String(trailRaw)];
+      }
+    }
+    auditTrail.push(auditMessage);
+
+    await executeD1Query("UPDATE TaskConflicts SET Resolution = ?, AuditTrail = ? WHERE FileId = ?", [resolution, JSON.stringify(auditTrail), fileId]);
+    return await getTaskFileByIdFromDb(fileId);
+  }
+
   const pool = await getDbPool();
   if (!pool) {
     const file = taskFiles.find(f => f.id === fileId);
@@ -766,6 +1084,16 @@ const resolveMergeConflictInDb = async (fileId: string, resolution: string, acti
 };
 
 const getRecommendationsFromDb = async (taskId: string): Promise<any[]> => {
+  if (isD1Configured()) {
+    const rows = await executeD1Query("SELECT * FROM AiRecommendations WHERE UPPER(TaskId) = UPPER(?)", [taskId]);
+    return rows.map((row: any) => ({
+      id: row.Id || row.id,
+      taskId: row.TaskId || row.taskId,
+      category: row.Category || row.category,
+      recommendationText: row.RecommendationText || row.recommendationText
+    }));
+  }
+
   const pool = await getDbPool();
   const targetId = taskId.toUpperCase();
   if (!pool) {
@@ -790,6 +1118,17 @@ const getRecommendationsFromDb = async (taskId: string): Promise<any[]> => {
 };
 
 const saveRecommendationsToDb = async (taskId: string, recs: any[]): Promise<boolean> => {
+  if (isD1Configured()) {
+    await executeD1Query("DELETE FROM AiRecommendations WHERE UPPER(TaskId) = UPPER(?)", [taskId]);
+    for (const rec of recs) {
+      await executeD1Query(
+        "INSERT INTO AiRecommendations (Id, TaskId, Category, RecommendationText) VALUES (?, ?, ?, ?)",
+        [rec.id, taskId, rec.category, rec.recommendationText]
+      );
+    }
+    return true;
+  }
+
   const pool = await getDbPool();
   if (!pool) {
     aiRecommendations = aiRecommendations.filter(r => {
@@ -826,6 +1165,24 @@ const saveRecommendationsToDb = async (taskId: string, recs: any[]): Promise<boo
 };
 
 const getDashboardMetricsFromDb = async (): Promise<any> => {
+  if (isD1Configured()) {
+    try {
+      const qTasks = await executeD1Query("SELECT COUNT(*) as cnt FROM CodeTasks");
+      const qConflicts = await executeD1Query("SELECT COUNT(*) as cnt FROM TaskFiles WHERE IsConflict = 1");
+      const qResolved = await executeD1Query("SELECT COUNT(*) as cnt FROM TaskFiles WHERE IsConflict = 1 AND IsResolved = 1");
+      const qFiles = await executeD1Query("SELECT COUNT(*) as cnt FROM TaskFiles");
+
+      return {
+        totalTasks: qTasks[0]?.cnt ?? qTasks[0]?.["COUNT(*)"] ?? 0,
+        totalConflicts: qConflicts[0]?.cnt ?? qConflicts[0]?.["COUNT(*)"] ?? 0,
+        resolvedConflicts: qResolved[0]?.cnt ?? qResolved[0]?.["COUNT(*)"] ?? 0,
+        filesChanged: qFiles[0]?.cnt ?? qFiles[0]?.["COUNT(*)"] ?? 0
+      };
+    } catch (e) {
+      return { totalTasks: 0, totalConflicts: 0, resolvedConflicts: 0, filesChanged: 0 };
+    }
+  }
+
   const pool = await getDbPool();
   if (!pool) {
     const totalTasks = codeTasks.length;
@@ -853,6 +1210,24 @@ const getDashboardMetricsFromDb = async (): Promise<any> => {
 };
 
 const getDeliverablesFromDb = async (taskId?: string): Promise<any[]> => {
+  if (isD1Configured()) {
+    let query = "SELECT * FROM TaskFiles";
+    let params: any[] = [];
+    if (taskId) {
+      query = "SELECT * FROM TaskFiles WHERE UPPER(TaskId) = UPPER(?) OR 'TASK-' || UPPER(TaskId) = UPPER(?) OR UPPER(TaskId) = 'TASK-' || UPPER(?)";
+      params = [taskId, taskId, taskId];
+    }
+    const rows = await executeD1Query(query, params);
+    return rows.map((row: any) => ({
+      name: row.FileName || row.fileName,
+      path: row.Path || row.path,
+      content: row.ResolvedContent || row.resolvedContent || row.FeatureContent || row.featureContent || row.BaseContent || row.baseContent || "",
+      baseContent: row.BaseContent || row.baseContent || "",
+      taskId: row.TaskId || row.taskId,
+      isResolved: !!(row.IsResolved ?? row.isResolved)
+    }));
+  }
+
   const pool = await getDbPool();
   if (!pool) {
     const rootDir = getEnterpriseDir();
@@ -952,6 +1327,7 @@ const syncTaskFilesToPhysicalWorkspace = () => {
 // Loads state models and triggers physical file synchronization
 const loadAppState = () => {
   try {
+    if (isD1Configured()) return;
     if (isMssqlConfigured()) return;
 
     const tasksPath = getStateFilePath("tasks.json");
@@ -1015,6 +1391,10 @@ const loadAppState = () => {
 
 // Seed default tasks and files - Clean Startup (no existing tasks)
 const seedTasksAndFiles = () => {
+  if (isD1Configured()) {
+    initD1Tables(); // Setup/seed Cloudflare D1 tables
+    return;
+  }
   if (isMssqlConfigured()) return; // Skip seeding local files if using database
 
   const lockPath = getStateFilePath("seed-clean.lock");
