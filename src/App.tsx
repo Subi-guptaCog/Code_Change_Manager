@@ -251,16 +251,36 @@ export default function App() {
     try {
       const res = await fetch("/api/db-status");
       if (!res.ok) {
-        throw new Error("API respond with error status code " + res.status);
+        throw new Error("API responded with error status code " + res.status);
       }
       const data = await res.json();
+      
+      if (data.status === "Error") {
+        logAudit(`⚠️ Database Connection Error: ${data.details?.error || "Unknown Cloudflare D1 query error."}`);
+        logAudit("Database status: Unconfigured/offline. Activating Fail-safe Client Storage Engine.");
+        setUseLocalStorageFallback(true);
+        localStorage.setItem("codeshield_fallback_active", "true");
+        return true;
+      }
+
+      if (data.type === "Local File System Fail-safe Storage") {
+        logAudit("Database: Running on Local Filesystem. Full persistence available through local snapshots.");
+        setUseLocalStorageFallback(true);
+        localStorage.setItem("codeshield_fallback_active", "true");
+        return true;
+      }
+
       logAudit(`Database: Connected dynamically to ${data.type || "Local File System Fail-safe Storage"}.`);
       if (data.details) {
         const missing = Object.entries(data.details)
-          .filter(([_, val]) => val === "Missing")
+          .filter(([key, val]) => key !== "error" && val === "Missing")
           .map(([key]) => key);
         if (missing.length > 0) {
           logAudit(`Cloudflare Configuration Status: Missing ${missing.join(", ")}`);
+          logAudit("Falling back to client-side localStorage because D1 configurations are incomplete.");
+          setUseLocalStorageFallback(true);
+          localStorage.setItem("codeshield_fallback_active", "true");
+          return true;
         } else {
           logAudit(`Cloudflare Configuration Status: All credentials verified and active!`);
         }
