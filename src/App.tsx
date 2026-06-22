@@ -2031,7 +2031,7 @@ export default function App() {
                 &times;
               </button>
             </div>
-            
+            //code
             <div className="p-5">
               <p className="text-xs text-gray-600 leading-relaxed font-sans prose">
                 {confirmDialog.message}
