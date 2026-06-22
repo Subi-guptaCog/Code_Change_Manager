@@ -1591,19 +1591,36 @@ function detectDifferences(base: string, modified: string) {
 }
 
 // 4. API Endpoints
-app.get("/api/db-status", (req, res) => {
+app.get("/api/db-status", async (req, res) => {
+  const accountId = cleanEnvVar(process.env.CLOUDFLARE_ACCOUNT_ID);
+  const databaseId = cleanEnvVar(process.env.CLOUDFLARE_DATABASE_ID);
+  const apiToken = cleanEnvVar(process.env.CLOUDFLARE_API_TOKEN);
+
   const d1Details = {
-    CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID ? "Configured" : "Missing",
-    CLOUDFLARE_DATABASE_ID: process.env.CLOUDFLARE_DATABASE_ID ? "Configured" : "Missing",
-    CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN ? "Configured" : "Missing",
+    CLOUDFLARE_ACCOUNT_ID: accountId ? "Configured" : "Missing",
+    CLOUDFLARE_DATABASE_ID: databaseId ? "Configured" : "Missing",
+    CLOUDFLARE_API_TOKEN: apiToken ? "Configured" : "Missing",
+    error: null as string | null
   };
 
   if (isD1Configured()) {
-    res.json({ 
-      type: "Cloudflare D1 Serverless", 
-      status: "Connected",
-      details: d1Details
-    });
+    try {
+      // Live test check
+      await executeD1Query("SELECT 1");
+      res.json({ 
+        type: "Cloudflare D1 Serverless", 
+        status: "Connected",
+        details: d1Details
+      });
+    } catch (err: any) {
+      console.error("D1 Connection live test error:", err.message);
+      d1Details.error = err.message;
+      res.json({
+        type: "Cloudflare D1 Serverless (Query Failed)",
+        status: "Error",
+        details: d1Details
+      });
+    }
   } else if (isMssqlConfigured()) {
     res.json({ 
       type: "Microsoft SQL Server", 
