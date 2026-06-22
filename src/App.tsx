@@ -896,6 +896,44 @@ export default function App() {
       }
     }
 
+    if (useLocalStorageFallback) {
+      try {
+        const localFiles = getLocalFiles();
+        const updatedFiles = localFiles.map(f => {
+          if (f.id === selectedFile.id) {
+            return {
+              ...f,
+              featureContent: contentToSave
+            };
+          }
+          return f;
+        });
+        saveLocalFiles(updatedFiles);
+        logAudit(`Successfully saved file snapshot '${selectedFile.fileName}' changes to persistent storage (local storage fallback).`);
+        setFeatureCode(contentToSave);
+        
+        if (selectedTask) {
+          const activeFiles = updatedFiles.filter(f => f.taskId === selectedTask.taskId);
+          setFiles(activeFiles);
+          
+          const updatedFile = activeFiles.find(f => f.id === selectedFile.id);
+          if (updatedFile) {
+            setSelectedFile(updatedFile);
+          }
+        }
+        
+        runCompare(baseCode, contentToSave, selectedFile.fileName);
+        
+        const localTasks = getLocalTasks();
+        setMetrics(getLocalMetrics(localTasks, updatedFiles));
+        
+        fetchDeliverables(undefined, selectedTask?.taskId);
+      } catch (err) {
+        logAudit(`Failed to send save request for file ${selectedFile.fileName}`);
+      }
+      return;
+    }
+
     try {
       const res = await fetch(`/api/files/${selectedFile.id}`, {
         method: "PUT",
@@ -2031,7 +2069,7 @@ export default function App() {
                 &times;
               </button>
             </div>
-            //code
+            
             <div className="p-5">
               <p className="text-xs text-gray-600 leading-relaxed font-sans prose">
                 {confirmDialog.message}
