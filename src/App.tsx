@@ -880,6 +880,24 @@ export default function App() {
   // Report Export simulator (downloads physical CSV change ledger)
   const triggerExportReport = () => {
     if (!selectedTask) return;
+    if (useLocalStorageFallback) {
+      const activeFiles = getLocalFiles().filter(f => f.taskId === selectedTask.taskId);
+      let csvContent = "data:text/csv;charset=utf-8,";
+      csvContent += "File Name,Path,Extension,Is Conflict,Is Resolved,Status\n";
+      activeFiles.forEach(f => {
+        const row = `"${f.fileName}","${f.path}","${f.extension}",${f.isConflict},${f.isResolved},"${f.isConflict ? (f.isResolved ? "RESOLVED" : "CONFLICTING") : "OK"}"`;
+        csvContent += row + "\n";
+      });
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `CodeShield_Change_Ledger_${selectedTask.taskId}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      logAudit(`Exported Change Ledger summary report as physical CSV for Task ${selectedTask.taskId} (offline mode).`);
+      return;
+    }
     window.location.href = `/api/reports/download-csv?taskId=${selectedTask.taskId}`;
     logAudit(`Exported Change Ledger summary report as physical CSV for Task ${selectedTask.taskId}.`);
   };
@@ -976,6 +994,30 @@ export default function App() {
       "Delete Enterprise Deliverable",
       `Are you absolutely sure you want to delete '${filePath}' from the Enterprise clean architecture source tree? This will permanently delete the file from your local disk storage.`,
       async () => {
+        if (useLocalStorageFallback) {
+          const localFiles = getLocalFiles();
+          const updatedFiles = localFiles.filter(item => item.path !== filePath);
+          saveLocalFiles(updatedFiles);
+          logAudit(`Successfully deleted enterprise deliverable file locally: ${filePath}`);
+          
+          const df = deliverableFiles.filter(item => item.path !== filePath);
+          setDeliverableFiles(df);
+          if (selectedDeliverable?.path === filePath) {
+            if (df.length > 0) {
+              setSelectedDeliverable(df[0]);
+            } else {
+              setSelectedDeliverable(null);
+            }
+          }
+          
+          if (selectedTask) {
+            setFiles(updatedFiles.filter(f => f.taskId === selectedTask.taskId));
+          }
+          const localTasks = getLocalTasks();
+          setMetrics(getLocalMetrics(localTasks, updatedFiles));
+          return;
+        }
+
         try {
           const res = await fetch(`/api/deliverables/files?path=${encodeURIComponent(filePath)}`, {
             method: "DELETE"
