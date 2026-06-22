@@ -39,6 +39,7 @@ import {
   Cell
 } from "recharts";
 import { CodeTask, TaskFile, CodeChange, AIRecommendation, DashboardMetrics } from "./types";
+import { DEFAULT_TASKS, DEFAULT_FILES, DEFAULT_AI_RECOMMENDATIONS } from "./fallbackData";
 
 export default function App() {
   // Core STATE data
@@ -124,6 +125,118 @@ export default function App() {
   // Drag and Drop State
   const [isDragging, setIsDragging] = useState(false);
 
+  // Fallback to client-side storage when Cloudflare API is unreachable (e.g. deployed on static storage Pages)
+  const [useLocalStorageFallback, setUseLocalStorageFallback] = useState(() => {
+    return localStorage.getItem("codeshield_fallback_active") === "true";
+  });
+
+  // Client-side LocalStorage DB Managers
+  const getLocalTasks = (): CodeTask[] => {
+    const data = localStorage.getItem("codeshield_tasks");
+    if (!data) {
+      localStorage.setItem("codeshield_tasks", JSON.stringify(DEFAULT_TASKS));
+      return DEFAULT_TASKS;
+    }
+    try {
+      return JSON.parse(data);
+    } catch {
+      return DEFAULT_TASKS;
+    }
+  };
+
+  const saveLocalTasks = (newTasks: CodeTask[]) => {
+    localStorage.setItem("codeshield_tasks", JSON.stringify(newTasks));
+  };
+
+  const getLocalFiles = (): TaskFile[] => {
+    const data = localStorage.getItem("codeshield_files");
+    if (!data) {
+      localStorage.setItem("codeshield_files", JSON.stringify(DEFAULT_FILES));
+      return DEFAULT_FILES;
+    }
+    try {
+      return JSON.parse(data);
+    } catch {
+      return DEFAULT_FILES;
+    }
+  };
+
+  const saveLocalFiles = (newFiles: TaskFile[]) => {
+    localStorage.setItem("codeshield_files", JSON.stringify(newFiles));
+  };
+
+  const getLocalRecommendations = (): AIRecommendation[] => {
+    const data = localStorage.getItem("codeshield_recommendations");
+    if (!data) {
+      localStorage.setItem("codeshield_recommendations", JSON.stringify(DEFAULT_AI_RECOMMENDATIONS));
+      return DEFAULT_AI_RECOMMENDATIONS;
+    }
+    try {
+      return JSON.parse(data);
+    } catch {
+      return DEFAULT_AI_RECOMMENDATIONS;
+    }
+  };
+
+  const getLocalMetrics = (allTasks: CodeTask[], allFiles: TaskFile[]): DashboardMetrics => {
+    const totalTasks = allTasks.length;
+    const totalConflicts = allFiles.filter(f => f.isConflict).length;
+    const resolvedConflicts = allFiles.filter(f => f.isConflict && f.isResolved).length;
+    return {
+      totalTasks,
+      totalConflicts,
+      resolvedConflicts,
+      filesChanged: allFiles.length
+    };
+  };
+
+  const enableFallbackMode = () => {
+    logAudit("Database: Switched automatically to Local File System Fail-safe Storage.");
+    setUseLocalStorageFallback(true);
+    localStorage.setItem("codeshield_fallback_active", "true");
+    
+    const localTasks = getLocalTasks();
+    setTasks(localTasks);
+    
+    const localFiles = getLocalFiles();
+    setMetrics(getLocalMetrics(localTasks, localFiles));
+
+    if (localTasks.length > 0) {
+      const savedSelectedTaskId = localStorage.getItem("selected_task_id");
+      const found = localTasks.find((t: any) => t.taskId === savedSelectedTaskId);
+      const activeT = found || localTasks[0];
+      setSelectedTask(activeT);
+      const activeFiles = localFiles.filter(f => f.taskId === activeT.taskId);
+      setFiles(activeFiles);
+      if (activeFiles.length > 0) {
+        handleSelectFile(activeFiles[0]);
+      }
+      logAudit(`Switched active workspace to Task ID: ${activeT.taskId}`);
+    } else {
+      setSelectedTask(null);
+      setFiles([]);
+    }
+  };
+
+  const loadLocalStorageState = () => {
+    const localTasks = getLocalTasks();
+    setTasks(localTasks);
+    const localFiles = getLocalFiles();
+    setMetrics(getLocalMetrics(localTasks, localFiles));
+
+    if (localTasks.length > 0) {
+      const savedSelectedTaskId = localStorage.getItem("selected_task_id");
+      const found = localTasks.find((t: any) => t.taskId === savedSelectedTaskId);
+      const activeT = found || localTasks[0];
+      setSelectedTask(activeT);
+      const activeFiles = localFiles.filter(f => f.taskId === activeT.taskId);
+      setFiles(activeFiles);
+    } else {
+      setSelectedTask(null);
+      setFiles([]);
+    }
+  };
+
   // Fetch initial tasks
   useEffect(() => {
     fetchDbStatus();
@@ -134,23 +247,42 @@ export default function App() {
   const fetchDbStatus = async () => {
     try {
       const res = await fetch("/api/db-status");
+      if (!res.ok) {
+        throw new Error("API respond with error status code " + res.status);
+      }
       const data = await res.json();
       logAudit(`Database: Connected dynamically to ${data.type || "Local File System Fail-safe Storage"}.`);
+      if (data.details) {
+        const missing = Object.entries(data.details)
+          .filter(([_, val]) => val === "Missing")
+          .map(([key]) => key);
+        if (missing.length > 0) {
+          logAudit(`Cloudflare Configuration Status: Missing ${missing.join(", ")}`);
+        } else {
+          logAudit(`Cloudflare Configuration Status: All credentials verified and active!`);
+        }
+      }
+      setUseLocalStorageFallback(false);
+      localStorage.setItem("codeshield_fallback_active", "false");
     } catch {
-      logAudit("Database: Connected dynamically to Local File System Fail-safe Storage.");
+      logAudit("Database: API Status Route Unreachable. Activating Fail-safe Client Storage Engine.");
+      setUseLocalStorageFallback(true);
+      localStorage.setItem("codeshield_fallback_active", "true");
     }
   };
 
   const fetchTasks = async () => {
+    if (useLocalStorageFallback) {
+      loadLocalStorageState();
+      return;
+    }
     try {
       const res = await fetch("/api/tasks");
-      const data = await res.json();
-
       if (!res.ok) {
-        logAudit(`Error: Failed to fetch tasks from database store - ${data.error || "Unknown server error"}`);
+        enableFallbackMode();
         return;
       }
-
+      const data = await res.json();
       setTasks(data);
       if (data.length > 0) {
         const savedSelectedTaskId = localStorage.getItem("selected_task_id");
@@ -161,11 +293,17 @@ export default function App() {
         setFiles([]);
       }
     } catch (e) {
-      logAudit("Error: Failed to fetch tasks. Check your network or your database credentials.");
+      enableFallbackMode();
     }
   };
 
   const fetchMetrics = async () => {
+    if (useLocalStorageFallback) {
+      const localTasks = getLocalTasks();
+      const localFiles = getLocalFiles();
+      setMetrics(getLocalMetrics(localTasks, localFiles));
+      return;
+    }
     try {
       const res = await fetch("/api/dashboard/metrics");
       const data = await res.json();
@@ -176,6 +314,41 @@ export default function App() {
   };
 
   const fetchDeliverables = async (autoSelectPath?: string, customTaskId?: string) => {
+    if (useLocalStorageFallback) {
+      const tid = customTaskId || selectedTask?.taskId || "";
+      const matchedFiles = getLocalFiles().filter(f => f.taskId === tid);
+      const df = matchedFiles.map((f, index) => ({
+        id: f.id,
+        taskId: f.taskId,
+        fileName: f.fileName,
+        path: f.path,
+        extension: f.extension,
+        size: f.featureContent.length,
+        version: index + 1,
+        resolvedContent: f.resolvedContent,
+        isConflict: f.isConflict
+      }));
+      setDeliverableFiles(df);
+      if (df.length > 0) {
+        if (autoSelectPath) {
+          const match = df.find((f: any) => f.path === autoSelectPath || f.path.endsWith(autoSelectPath));
+          if (match) {
+            setSelectedDeliverable(match);
+            return;
+          }
+        }
+        setSelectedDeliverable((prev: any) => {
+          if (prev) {
+            const stillExists = df.find((f: any) => f.path === prev.path);
+            if (stillExists) return stillExists;
+          }
+          return df[0];
+        });
+      } else {
+        setSelectedDeliverable(null);
+      }
+      return;
+    }
     try {
       const tid = customTaskId || selectedTask?.taskId || "";
       const res = await fetch(`/api/deliverables/files?taskId=${encodeURIComponent(tid)}`);
@@ -211,6 +384,14 @@ export default function App() {
     setBaseCode("");
     setFeatureCode("");
     setDiffAnalysis(null);
+    if (useLocalStorageFallback) {
+      const localFiles = getLocalFiles();
+      const activeFiles = localFiles.filter(f => f.taskId === task.taskId);
+      setFiles(activeFiles);
+      logAudit(`Switched active workspace to Task ID: ${task.taskId}`);
+      fetchDeliverables(undefined, task.taskId);
+      return;
+    }
     try {
       const filesRes = await fetch(`/api/tasks/${task.taskId}/files`);
       const filesData = filesRes.ok ? await filesRes.json() : [];
@@ -225,6 +406,13 @@ export default function App() {
 
   const handleSelectFile = async (file: TaskFile) => {
     setSelectedFile(file);
+    if (useLocalStorageFallback) {
+      setBaseCode(file.baseContent);
+      setFeatureCode(file.featureContent);
+      logAudit(`Opened file editor for ${file.fileName}`);
+      runCompare(file.baseContent, file.featureContent, file.fileName);
+      return;
+    }
     try {
       const res = await fetch(`/api/files/${file.id}/content`);
       const data = await res.json();
@@ -238,6 +426,49 @@ export default function App() {
   };
 
   const runCompare = async (base: string, modified: string, fileName: string) => {
+    if (useLocalStorageFallback) {
+      const baseLines = base.split('\n');
+      const modLines = modified.split('\n');
+      const maxLines = Math.max(baseLines.length, modLines.length);
+      const changes: any[] = [];
+
+      for (let i = 0; i < maxLines; i++) {
+        const lineNum = i + 1;
+        const bLine = baseLines[i];
+        const mLine = modLines[i];
+
+        if (bLine !== undefined && mLine !== undefined) {
+          if (bLine !== mLine) {
+            changes.push({
+              lineNumber: lineNum,
+              changeType: "Modified",
+              oldValue: bLine.trim(),
+              newValue: mLine.trim()
+            });
+          }
+        } else if (mLine !== undefined) {
+          changes.push({
+            lineNumber: lineNum,
+            changeType: "Added",
+            oldValue: "",
+            newValue: mLine.trim()
+          });
+        } else if (bLine !== undefined) {
+          changes.push({
+            lineNumber: lineNum,
+            changeType: "Deleted",
+            oldValue: bLine.trim(),
+            newValue: ""
+          });
+        }
+      }
+      setDiffAnalysis({
+        changesCount: changes.length,
+        linesAnalyzed: maxLines,
+        changes
+      });
+      return;
+    }
     try {
       const res = await fetch("/api/compare", {
         method: "POST",
@@ -253,6 +484,50 @@ export default function App() {
 
   const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (useLocalStorageFallback) {
+      const localTasks = getLocalTasks();
+      const newTask = {
+        ...newTaskForm,
+        createdDate: new Date().toISOString(),
+        commitId: "m_" + Math.random().toString(36).substring(2, 9)
+      };
+      const updatedTasks = [...localTasks, newTask];
+      saveLocalTasks(updatedTasks);
+      setTasks(updatedTasks);
+      
+      const localFiles = getLocalFiles();
+      const dummyFile: TaskFile = {
+        id: "file_" + newTask.taskId.replace("TASK-", "") + "_1",
+        taskId: newTask.taskId,
+        fileName: "Index.cs",
+        path: "Infrastructure/Index.cs",
+        extension: "cs",
+        baseContent: "using System;\n\nnamespace EnterpriseService\n{\n    public class Index\n    {\n        // CodeShield snapshot initial\n    }\n}",
+        featureContent: "using System;\n\nnamespace EnterpriseService\n{\n    public class Index\n    {\n        // CodeShield snapshot with changes on " + new Date().toLocaleDateString() + "\n    }\n}",
+        resolvedContent: "",
+        isConflict: false,
+        isResolved: false
+      };
+      const updatedFiles = [...localFiles, dummyFile];
+      saveLocalFiles(updatedFiles);
+
+      handleSelectTask(newTask);
+      setIsNewTaskModalOpen(false);
+
+      const randomSfx = Math.floor(1000 + Math.random() * 9000);
+      setNewTaskForm({
+        taskId: `TASK-${randomSfx}`,
+        baseBranch: "main",
+        featureBranch: `feature/billing-fix-${randomSfx}`,
+        description: "Configure secure database indexing and connection mappings.",
+        developer: "Diana Prince",
+        repositoryUrl: "https://github.com/enterprise/billing-api.git"
+      });
+
+      setMetrics(getLocalMetrics(updatedTasks, updatedFiles));
+      logAudit(`Successfully provisioned Task Record ${newTask.taskId} in local client database.`);
+      return;
+    }
     try {
       const res = await fetch("/api/tasks", {
         method: "POST",
@@ -292,6 +567,36 @@ export default function App() {
       "Delete Task Record",
       `Are you absolutely sure you want to delete Task ${taskId}? This will permanently delete the task, all its associated code file snapshots, active conflicts, and AI reviews.`,
       async () => {
+        if (useLocalStorageFallback) {
+          const localTasks = getLocalTasks();
+          const updatedTasks = localTasks.filter(t => t.taskId !== taskId);
+          saveLocalTasks(updatedTasks);
+          setTasks(updatedTasks);
+
+          const localFiles = getLocalFiles();
+          const updatedFiles = localFiles.filter(f => f.taskId !== taskId);
+          saveLocalFiles(updatedFiles);
+
+          logAudit(`Successfully deleted Task ${taskId} and wiped all related static files/conflict configurations.`);
+          if (taskA === taskId) setTaskA("");
+          if (taskB === taskId) setTaskB("");
+          setTaskComparisonResult(null);
+
+          if (updatedTasks.length > 0) {
+            handleSelectTask(updatedTasks[0]);
+          } else {
+            setSelectedTask(null);
+            setFiles([]);
+            setSelectedFile(null);
+            setBaseCode("");
+            setFeatureCode("");
+            setDiffAnalysis(null);
+            setDeliverableFiles([]);
+            setSelectedDeliverable(null);
+          }
+          setMetrics(getLocalMetrics(updatedTasks, updatedFiles));
+          return;
+        }
         try {
           const res = await fetch(`/api/tasks/${taskId}`, {
             method: "DELETE"
@@ -346,12 +651,41 @@ export default function App() {
 
     let finalValue = "";
     if (mode === "current") {
-      // Strips standard merge conflict header and displays only our original parts
       finalValue = baseCode;
     } else if (mode === "incoming") {
       finalValue = sourceFeature.replace(/<<<<<<< HEAD[\s\S]*?=======/, "").replace(/>>>>>>>.*/, "");
     } else {
       finalValue = baseCode + "\n\n/* Merged both branches successfully */\n" + sourceFeature.replace(/<<<<<<< HEAD[\s\S]*?=======/, "").replace(/>>>>>>>.*/, "");
+    }
+
+    if (useLocalStorageFallback) {
+      const localFiles = getLocalFiles();
+      const updatedFiles = localFiles.map(f => {
+        if (f.id === selectedFile.id) {
+          return {
+            ...f,
+            featureContent: finalValue,
+            resolvedContent: finalValue,
+            isResolved: true
+          };
+        }
+        return f;
+      });
+      saveLocalFiles(updatedFiles);
+      setFeatureCode(finalValue);
+      logAudit(`Conflict resolved inside ${selectedFile.fileName} using option: ACCEPT ${mode.toUpperCase()} (Client-side localStorage).`);
+      
+      if (selectedTask) {
+        const activeFiles = updatedFiles.filter(f => f.taskId === selectedTask.taskId);
+        setFiles(activeFiles);
+        const activeFile = activeFiles.find(f => f.id === selectedFile.id);
+        if (activeFile) {
+          setSelectedFile(activeFile);
+        }
+      }
+      const localTasks = getLocalTasks();
+      setMetrics(getLocalMetrics(localTasks, updatedFiles));
+      return;
     }
 
     try {
@@ -396,9 +730,41 @@ export default function App() {
           modifiedPayloadText = textContent + "\n\n// Enterprise Feature branch additions modified at " + new Date().toLocaleTimeString();
         }
 
+        if (useLocalStorageFallback) {
+          const localFiles = getLocalFiles();
+          const isIdentical = textContent === modifiedPayloadText;
+          const randomId = "file_" + Math.random().toString(36).substring(2, 9);
+          const uploadedFile: TaskFile = {
+            id: randomId,
+            taskId: selectedTask.taskId,
+            fileName: file.name,
+            path: `Uploads/${file.name}`,
+            extension: ext,
+            baseContent: isIdentical ? modifiedPayloadText : textContent,
+            featureContent: modifiedPayloadText,
+            resolvedContent: "",
+            isConflict: modifiedPayloadText.includes("<<<<<<< HEAD"),
+            isResolved: false
+          };
+          const updatedFiles = [...localFiles, uploadedFile];
+          saveLocalFiles(updatedFiles);
+
+          logAudit(`Uploaded file snapshot '${file.name}' to Local Fail-safe Storage cache.`);
+          
+          const activeFiles = updatedFiles.filter(f => f.taskId === selectedTask.taskId);
+          setFiles(activeFiles);
+          
+          const matched = activeFiles.find(f => f.id === uploadedFile.id);
+          if (matched) {
+            handleSelectFile(matched);
+          }
+          const localTasks = getLocalTasks();
+          setMetrics(getLocalMetrics(localTasks, updatedFiles));
+          fetchDeliverables(uploadedFile.path, selectedTask.taskId);
+          return;
+        }
+
         try {
-          // Optimize payload size: if baseContent and featureContent are identical, omit sending baseContent.
-          // The server will automatically default baseContent to featureContent. This reduces payload size by ~50% to stay safely under Vercel serverless function size limits.
           const isIdentical = textContent === modifiedPayloadText;
           const uploadRes = await fetch(`/api/tasks/${selectedTask.taskId}/files`, {
             method: "POST",
@@ -416,7 +782,6 @@ export default function App() {
             const uploadedFile = await uploadRes.json();
             logAudit(`Uploaded file snapshot '${file.name}' to Task database store.`);
             
-            // Fetch newest file snapshots for task and select uploaded file
             const filesRes = await fetch(`/api/tasks/${selectedTask.taskId}/files`);
             const filesData = await filesRes.json();
             setFiles(filesData);
@@ -640,7 +1005,13 @@ export default function App() {
                 <GitCompare className="w-4 h-4" />
               </div>
               <div>
-                <h1 className="text-sm font-extrabold tracking-tight text-gray-800">CodeShield Workspace</h1>
+                <h1 className="text-sm font-extrabold tracking-tight text-[#1e1e1e] flex items-center gap-2">
+                  <span>CodeShield Workspace</span>
+                  <span className={`inline-flex items-center text-[9px] px-1.5 py-0.5 rounded-full font-mono font-bold border transition-colors ${useLocalStorageFallback ? "bg-amber-50 text-amber-100/10 text-amber-700 border-amber-200" : "bg-emerald-50 text-emerald-100/10 text-emerald-700 border-emerald-200"}`}>
+                    <Database className="w-2.5 h-2.5 mr-1 text-current" />
+                    {useLocalStorageFallback ? "LOCAL FALLBACK ACTIVE" : "CLOUDFLARE D1 ACTIVE"}
+                  </span>
+                </h1>
                 <p className="text-[10px] text-gray-500 font-mono leading-tight">Enterprise Conflict & Change Management</p>
               </div>
             </div>
@@ -920,6 +1291,22 @@ export default function App() {
                                       "Delete Code Snapshot",
                                       `Are you absolutely sure you want to delete '${file.fileName}'? This will permanently delete this code snapshot from the current Task workspace.`,
                                       async () => {
+                                        if (useLocalStorageFallback) {
+                                          const localFiles = getLocalFiles();
+                                          const updatedFiles = localFiles.filter(f => f.id !== file.id);
+                                          saveLocalFiles(updatedFiles);
+                                          logAudit(`Successfully deleted file snapshot: ${file.fileName} (Client-side localStorage).`);
+                                          setFiles(updatedFiles.filter(f => f.taskId === (selectedTask?.taskId || "")));
+                                          if (selectedFile?.id === file.id) {
+                                            setSelectedFile(null);
+                                            setBaseCode("");
+                                            setFeatureCode("");
+                                            setDiffAnalysis(null);
+                                          }
+                                          const localTasks = getLocalTasks();
+                                          setMetrics(getLocalMetrics(localTasks, updatedFiles));
+                                          return;
+                                        }
                                         try {
                                           const res = await fetch(`/api/files/${file.id}`, {
                                             method: "DELETE"
