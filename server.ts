@@ -405,12 +405,28 @@ const executeD1Query = async (sql: string, params: any[] = []): Promise<any[]> =
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Cloudflare D1 query failed (Status ${response.status}): ${text}`);
+    let troubleshootingGuide = "";
+    if (response.status === 401) {
+      troubleshootingGuide = "\n\n🔑 [CLOUDFLARE 401 AUTHENTICATION TROUBLESHOOTING]:" +
+        "\n1) Permisssion Issue: In your Cloudflare Dashboard -> API Tokens -> Custom Token, make sure you choose 'Account' -> 'D1' -> 'Edit' from the dropdown. (Do NOT select 'Zone' or 'User' roles!)." +
+        "\n2) Account Access: In the API Token 'Account Resources' section, ensure it is set to 'Include' -> 'All accounts' or specifies your exact Account ID." +
+        "\n3) Wrong Key Type: Verify you entered a scoped API Token (typically a long string with mixed letters, digits, underscores, and hyphens), NOT a Global API Key (which is a 37-character hexadecimal string). If using a Global Key, please create a scoped API Token instead." +
+        "\n4) Reload Environment: If you just updated the variables in the Settings menu, please click the Dev Server Restart button to apply the changes.";
+    }
+    throw new Error(`Cloudflare D1 query failed (Status ${response.status}): ${text}${troubleshootingGuide}`);
   }
 
   const data: any = await response.json();
   if (!data.success) {
-    throw new Error(`Cloudflare D1 query errors: ${JSON.stringify(data.errors)}`);
+    let troubleshootingGuide = "";
+    if (data.errors?.some((e: any) => e.code === 10000)) {
+      troubleshootingGuide = "\n\n🔑 [CLOUDFLARE 10000 AUTHENTICATION TROUBLESHOOTING]:" +
+        "\n1) Permisssion Issue: In your Cloudflare Dashboard -> API Tokens -> Custom Token, make sure you choose 'Account' -> 'D1' -> 'Edit' from the dropdown. (Do NOT select 'Zone' or 'User' roles!)." +
+        "\n2) Account Access: In the API Token 'Account Resources' section, ensure it is set to 'Include' -> 'All accounts' or specifies your exact Account ID." +
+        "\n3) Wrong Key Type: Verify you entered a scoped API Token (typically a long string with mixed letters, digits, underscores, and hyphens), NOT a Global API Key (which is a 37-character hexadecimal string). If using a Global Key, please create a scoped API Token instead." +
+        "\n4) Reload Environment: If you just updated the variables in the Settings menu, please click the Dev Server Restart button to apply the changes.";
+    }
+    throw new Error(`Cloudflare D1 query errors: ${JSON.stringify(data.errors)}${troubleshootingGuide}`);
   }
 
   const queryResult = data.result?.[0];
@@ -2109,7 +2125,6 @@ async function startServer() {
       server: { middlewareMode: true },
       appType: "spa"
     });
-    //cpndole testing
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
