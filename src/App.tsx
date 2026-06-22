@@ -239,12 +239,15 @@ export default function App() {
 
   // Fetch initial tasks
   useEffect(() => {
-    fetchDbStatus();
-    fetchTasks();
-    fetchMetrics();
+    const initializeApp = async () => {
+      const isFallback = await checkAndInitializeDbStatus();
+      await fetchTasks(isFallback);
+      await fetchMetrics(isFallback);
+    };
+    initializeApp();
   }, []);
 
-  const fetchDbStatus = async () => {
+  const checkAndInitializeDbStatus = async (): Promise<boolean> => {
     try {
       const res = await fetch("/api/db-status");
       if (!res.ok) {
@@ -264,15 +267,22 @@ export default function App() {
       }
       setUseLocalStorageFallback(false);
       localStorage.setItem("codeshield_fallback_active", "false");
+      return false;
     } catch {
       logAudit("Database: API Status Route Unreachable. Activating Fail-safe Client Storage Engine.");
       setUseLocalStorageFallback(true);
       localStorage.setItem("codeshield_fallback_active", "true");
+      return true;
     }
   };
 
-  const fetchTasks = async () => {
-    if (useLocalStorageFallback) {
+  const fetchDbStatus = async () => {
+    await checkAndInitializeDbStatus();
+  };
+
+  const fetchTasks = async (overrideFallback?: boolean) => {
+    const isFallback = overrideFallback !== undefined ? overrideFallback : useLocalStorageFallback;
+    if (isFallback) {
       loadLocalStorageState();
       return;
     }
@@ -287,7 +297,7 @@ export default function App() {
       if (data.length > 0) {
         const savedSelectedTaskId = localStorage.getItem("selected_task_id");
         const found = data.find((t: any) => t.taskId === savedSelectedTaskId);
-        handleSelectTask(found || data[0]);
+        handleSelectTask(found || data[0], isFallback);
       } else {
         setSelectedTask(null);
         setFiles([]);
@@ -297,8 +307,9 @@ export default function App() {
     }
   };
 
-  const fetchMetrics = async () => {
-    if (useLocalStorageFallback) {
+  const fetchMetrics = async (overrideFallback?: boolean) => {
+    const isFallback = overrideFallback !== undefined ? overrideFallback : useLocalStorageFallback;
+    if (isFallback) {
       const localTasks = getLocalTasks();
       const localFiles = getLocalFiles();
       setMetrics(getLocalMetrics(localTasks, localFiles));
@@ -313,8 +324,9 @@ export default function App() {
     }
   };
 
-  const fetchDeliverables = async (autoSelectPath?: string, customTaskId?: string) => {
-    if (useLocalStorageFallback) {
+  const fetchDeliverables = async (autoSelectPath?: string, customTaskId?: string, overrideFallback?: boolean) => {
+    const isFallback = overrideFallback !== undefined ? overrideFallback : useLocalStorageFallback;
+    if (isFallback) {
       const tid = customTaskId || selectedTask?.taskId || "";
       const matchedFiles = getLocalFiles().filter(f => f.taskId === tid);
       const df = matchedFiles.map((f, index) => ({
@@ -377,19 +389,20 @@ export default function App() {
     }
   };
 
-  const handleSelectTask = async (task: CodeTask) => {
+  const handleSelectTask = async (task: CodeTask, overrideFallback?: boolean) => {
+    const isFallback = overrideFallback !== undefined ? overrideFallback : useLocalStorageFallback;
     setSelectedTask(task);
     localStorage.setItem("selected_task_id", task.taskId);
     setSelectedFile(null);
     setBaseCode("");
     setFeatureCode("");
     setDiffAnalysis(null);
-    if (useLocalStorageFallback) {
+    if (isFallback) {
       const localFiles = getLocalFiles();
       const activeFiles = localFiles.filter(f => f.taskId === task.taskId);
       setFiles(activeFiles);
       logAudit(`Switched active workspace to Task ID: ${task.taskId}`);
-      fetchDeliverables(undefined, task.taskId);
+      fetchDeliverables(undefined, task.taskId, isFallback);
       return;
     }
     try {
@@ -397,7 +410,7 @@ export default function App() {
       const filesData = filesRes.ok ? await filesRes.json() : [];
       setFiles(filesData);
       logAudit(`Switched active workspace to Task ID: ${task.taskId}`);
-      fetchDeliverables(undefined, task.taskId);
+      fetchDeliverables(undefined, task.taskId, isFallback);
     } catch (err) {
       logAudit(`Error loading workspace snapshot elements for ${task.taskId}`);
       setFiles([]);
