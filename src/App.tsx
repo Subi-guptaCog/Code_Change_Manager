@@ -378,10 +378,13 @@ export default function App() {
         id: f.id,
         taskId: f.taskId,
         fileName: f.fileName,
+        name: f.fileName,
         path: f.path,
         extension: f.extension,
         size: f.featureContent.length,
         version: index + 1,
+        baseContent: f.baseContent,
+        content: f.resolvedContent || f.featureContent || f.baseContent || "",
         resolvedContent: f.resolvedContent,
         isConflict: f.isConflict
       }));
@@ -1808,7 +1811,7 @@ export default function App() {
                   >
                     <span className="truncate flex-1 py-0.5">{df.path}</span>
                     <div className="flex items-center space-x-1 shrink-0">
-                      <span className="text-[9px] bg-gray-100 text-gray-500 px-1.5 rounded border border-gray-200">{df.name.split('.').pop()}</span>
+                      <span className="text-[9px] bg-gray-100 text-gray-500 px-1.5 rounded border border-gray-200">{(df.name || df.fileName || "").split('.').pop()}</span>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -1884,11 +1887,11 @@ export default function App() {
                         <DiffEditor
                           height="100%"
                           language={
-                            selectedDeliverable.name.endsWith(".cs")
+                            (selectedDeliverable.name || selectedDeliverable.fileName || "").endsWith(".cs")
                               ? "csharp"
-                              : selectedDeliverable.name.endsWith(".sql")
+                              : (selectedDeliverable.name || selectedDeliverable.fileName || "").endsWith(".sql")
                               ? "sql"
-                              : selectedDeliverable.name.endsWith(".html")
+                              : (selectedDeliverable.name || selectedDeliverable.fileName || "").endsWith(".html")
                               ? "html"
                               : "typescript"
                           }
