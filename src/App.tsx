@@ -130,6 +130,9 @@ export default function App() {
     return localStorage.getItem("codeshield_fallback_active") === "true";
   });
 
+  const [dbStatusDetails, setDbStatusDetails] = useState<any>(null);
+  const [isDbStatusModalOpen, setIsDbStatusModalOpen] = useState(false);
+
   // Client-side LocalStorage DB Managers
   const getLocalTasks = (): CodeTask[] => {
     const data = localStorage.getItem("codeshield_tasks");
@@ -254,6 +257,7 @@ export default function App() {
         throw new Error("API responded with error status code " + res.status);
       }
       const data = await res.json();
+      setDbStatusDetails(data);
       
       if (data.status === "Error") {
         logAudit(`⚠️ Database Connection Error: ${data.details?.error || "Unknown Cloudflare D1 query error."}`);
@@ -290,14 +294,35 @@ export default function App() {
       return false;
     } catch {
       logAudit("Database: API Status Route Unreachable. Activating Fail-safe Client Storage Engine.");
+      setDbStatusDetails({
+        status: "Error",
+        type: "Unreachable",
+        details: {
+          CLOUDFLARE_ACCOUNT_ID: "Unknown",
+          CLOUDFLARE_DATABASE_ID: "Unknown",
+          CLOUDFLARE_API_TOKEN: "Unknown",
+          error: "API Status Route Unreachable. Please make sure the Dev Server is running and listening on port 3000."
+        }
+      });
       setUseLocalStorageFallback(true);
       localStorage.setItem("codeshield_fallback_active", "true");
       return true;
     }
   };
 
+  const [isRefreshingDb, setIsRefreshingDb] = useState(false);
+
   const fetchDbStatus = async () => {
     await checkAndInitializeDbStatus();
+  };
+
+  const handleManualDbRefresh = async () => {
+    setIsRefreshingDb(true);
+    const isFallback = await checkAndInitializeDbStatus();
+    await fetchTasks(isFallback);
+    await fetchMetrics(isFallback);
+    setIsRefreshingDb(false);
+    logAudit("Database connection status re-evaluated by user request.");
   };
 
   const fetchTasks = async (overrideFallback?: boolean) => {
@@ -1120,7 +1145,12 @@ export default function App() {
               <div>
                 <h1 className="text-sm font-extrabold tracking-tight text-[#1e1e1e] flex items-center gap-2">
                   <span>CodeShield Workspace</span>
-                  <span className={`inline-flex items-center text-[9px] px-1.5 py-0.5 rounded-full font-mono font-bold border transition-colors ${useLocalStorageFallback ? "bg-amber-50 text-amber-100/10 text-amber-700 border-amber-200" : "bg-emerald-50 text-emerald-100/10 text-emerald-700 border-emerald-200"}`}>
+                  <span 
+                    onClick={() => setIsDbStatusModalOpen(true)}
+                    className={`inline-flex items-center text-[9px] px-1.5 py-0.5 rounded-full font-mono font-bold border transition-colors cursor-pointer hover:opacity-80 ${useLocalStorageFallback ? "bg-amber-50 text-amber-700 border-amber-200" : "bg-emerald-50 text-emerald-700 border-emerald-200"}`}
+                    title="Click to view database connection status and details"
+                    id="db-status-badge"
+                  >
                     <Database className="w-2.5 h-2.5 mr-1 text-current" />
                     {useLocalStorageFallback ? "LOCAL FALLBACK ACTIVE" : "CLOUDFLARE D1 ACTIVE"}
                   </span>
@@ -2165,6 +2195,136 @@ export default function App() {
                 id="btn-execute-confirm-modal"
               >
                 {confirmDialog.confirmText || "Confirm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cloudflare D1 Database Status & Troubleshooting Modal */}
+      {isDbStatusModalOpen && (
+        <div className="fixed inset-0 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-lg border border-gray-300 shadow-2xl max-w-lg w-full overflow-hidden animate-scale-up animate-duration-150 text-gray-700">
+            {/* Modal Header */}
+            <div className="p-4 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+              <span className="font-bold text-gray-800 text-xs flex items-center gap-2 uppercase tracking-wider font-mono">
+                <Database className="w-4 h-4 text-[#0078D4]" />
+                <span>Cloudflare D1 Database Monitor</span>
+              </span>
+              <button
+                onClick={() => setIsDbStatusModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600 font-sans text-sm font-bold leading-none p-1"
+                title="Close monitor"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 space-y-4 max-h-[80vh] overflow-y-auto font-mono text-[11px]">
+              {/* Status Indicator Bar */}
+              <div className="flex items-center justify-between bg-gray-100 p-3 rounded border border-gray-200">
+                <div>
+                  <div className="text-[9px] text-gray-400 uppercase font-bold tracking-wider">Storage Engine</div>
+                  <div className="text-xs font-bold text-gray-800">
+                    {useLocalStorageFallback ? "Local client-side fallback storage" : (dbStatusDetails?.type || "Cloudflare D1 Serverless")}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`h-2.5 w-2.5 rounded-full ${useLocalStorageFallback ? "bg-amber-500 animate-pulse" : "bg-emerald-500 animate-ping"}`}></span>
+                  <span className={`text-[10px] font-bold ${useLocalStorageFallback ? "text-amber-700" : "text-emerald-700"}`}>
+                    {useLocalStorageFallback ? "FALLBACK ACTIVE" : "ONLINE & CONNECTED"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Configurations checklist */}
+              <div className="space-y-2">
+                <h3 className="text-[10px] uppercase font-bold text-gray-500 tracking-wider">Cloudflare Environment Variables</h3>
+                <div className="border border-gray-200 rounded divide-y divide-gray-100 bg-white">
+                  <div className="flex justify-between items-center p-2.5">
+                    <span>CLOUDFLARE_ACCOUNT_ID</span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${dbStatusDetails?.details?.CLOUDFLARE_ACCOUNT_ID === "Configured" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
+                      {dbStatusDetails?.details?.CLOUDFLARE_ACCOUNT_ID || "Missing"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center p-2.5">
+                    <span>CLOUDFLARE_DATABASE_ID</span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${dbStatusDetails?.details?.CLOUDFLARE_DATABASE_ID === "Configured" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
+                      {dbStatusDetails?.details?.CLOUDFLARE_DATABASE_ID || "Missing"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center p-2.5">
+                    <span>CLOUDFLARE_API_TOKEN</span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${dbStatusDetails?.details?.CLOUDFLARE_API_TOKEN === "Configured" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
+                      {dbStatusDetails?.details?.CLOUDFLARE_API_TOKEN || "Missing"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Error Output Card if query failed or unconfigured */}
+              {(useLocalStorageFallback || dbStatusDetails?.details?.error) && (
+                <div className="bg-red-50/50 border border-red-200 text-red-800 rounded p-4 space-y-2.5">
+                  <div className="flex items-center gap-1.5 font-bold text-[10px] uppercase tracking-wider text-red-700">
+                    <span className="inline-block w-2 h-2 rounded-full bg-red-500"></span>
+                    <span>Database Diagnostics / Error Log</span>
+                  </div>
+                  <p className="text-[10px] leading-relaxed break-words bg-red-100/50 p-2 rounded border border-red-200/50 font-mono text-red-900">
+                    {dbStatusDetails?.details?.error || "All or some Cloudflare D1 environment variables are missing. Please configure them in the AI Studio Settings menu."}
+                  </p>
+
+                  <div className="space-y-1.5 text-[10px]">
+                    <span className="font-bold text-red-800 block">Cloudflare D1 Connection Guide:</span>
+                    <ol className="list-decimal pl-4 space-y-1 text-red-900/90 leading-relaxed font-sans prose-sm">
+                      <li>
+                        <strong>Create Custom Token:</strong> In your Cloudflare Dashboard, go to <em>My Profile &gt; API Tokens &gt; Create Token &gt; Custom Token</em>.
+                      </li>
+                      <li>
+                        <strong>Configure Permissions:</strong> Choose <strong>Account</strong> &rarr; <strong>D1</strong> &rarr; <strong>Edit</strong> in the dropdown. (Do NOT choose "Zone" or "User" permissions!).
+                      </li>
+                      <li>
+                        <strong>Account Access:</strong> In the <em>Account Resources</em> section, set to "Include" &rarr; "All accounts" or specify your exact Account ID.
+                      </li>
+                      <li>
+                        <strong>Paste Secrets:</strong> In the AI Studio <strong>Settings &rarr; Secrets</strong> menu, set <code>CLOUDFLARE_ACCOUNT_ID</code>, <code>CLOUDFLARE_DATABASE_ID</code>, and <code>CLOUDFLARE_API_TOKEN</code>.
+                      </li>
+                    </ol>
+                  </div>
+                </div>
+              )}
+
+              {/* Live Status Note */}
+              <p className="text-[10px] text-gray-500 leading-normal font-sans">
+                When credentials are correct, CodeShield will automatically configure the D1 tables and synchronize your task/conflict records securely to Cloudflare D1 Serverless SQL!
+              </p>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-gray-50 border-t border-gray-200 flex justify-between items-center">
+              <button
+                onClick={handleManualDbRefresh}
+                disabled={isRefreshingDb}
+                className="px-4 py-1.5 bg-[#0078D4] hover:bg-[#106ebe] text-white text-[11px] font-bold font-mono rounded shadow-sm disabled:opacity-50 flex items-center gap-1.5 transition-all cursor-pointer"
+              >
+                {isRefreshingDb ? (
+                  <>
+                    <span className="h-3 w-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                    <span>Testing...</span>
+                  </>
+                ) : (
+                  <>
+                    <Database className="w-3.5 h-3.5" />
+                    <span>Recheck Connection</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                onClick={() => setIsDbStatusModalOpen(false)}
+                className="px-4 py-1.5 border border-gray-300 hover:bg-gray-100 text-gray-700 text-xs font-semibold rounded font-sans transition-all cursor-pointer"
+              >
+                Close
               </button>
             </div>
           </div>
