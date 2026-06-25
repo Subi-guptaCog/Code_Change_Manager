@@ -1738,6 +1738,25 @@ app.get("/api/db-status", async (req, res) => {
   }
 });
 
+app.post("/api/db-reseed", async (req, res) => {
+  if (!isD1Configured()) {
+    return res.status(400).json({ error: "Cloudflare D1 is not configured." });
+  }
+  try {
+    console.log("Forcing Cloudflare D1 tables drop & recreation...");
+    await executeD1Query("DROP TABLE IF EXISTS CodeTasks");
+    await executeD1Query("DROP TABLE IF EXISTS TaskFiles");
+    await executeD1Query("DROP TABLE IF EXISTS TaskConflicts");
+    await executeD1Query("DROP TABLE IF EXISTS AiRecommendations");
+    
+    await initD1Tables();
+    res.json({ success: true, message: "Cloudflare D1 database successfully reset and populated with pre-seeded task/conflict snapshots!" });
+  } catch (err: any) {
+    console.error("D1 re-seed failure:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/tasks", async (req, res) => {
   try {
     const list = await getCodeTasksFromDb();
