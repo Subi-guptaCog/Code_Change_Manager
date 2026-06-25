@@ -23,7 +23,8 @@ import {
   ArrowRight,
   Database,
   Trash2,
-  Copy
+  Copy,
+  Cloud
 } from "lucide-react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import {
@@ -311,6 +312,7 @@ export default function App() {
   };
 
   const [isRefreshingDb, setIsRefreshingDb] = useState(false);
+  const [isSyncingLocal, setIsSyncingLocal] = useState(false);
 
   const fetchDbStatus = async () => {
     await checkAndInitializeDbStatus();
@@ -2294,6 +2296,61 @@ export default function App() {
                       </li>
                     </ol>
                   </div>
+                </div>
+              )}
+
+              {/* Local Data Migration Helper */}
+              {!useLocalStorageFallback && getLocalTasks().length > 0 && (
+                <div className="bg-blue-50/70 border border-blue-200 text-blue-900 rounded p-4 space-y-2">
+                  <div className="font-bold text-[10px] uppercase tracking-wider text-blue-700 flex items-center gap-1.5">
+                    <Cloud className="w-4 h-4 text-blue-600" />
+                    <span>Local Workspace Migrator</span>
+                  </div>
+                  <p className="text-[10px] leading-relaxed font-sans text-blue-800">
+                    We detected <strong>{getLocalTasks().length} tasks</strong> and <strong>{getLocalFiles().length} file snapshots</strong> stored in your browser's local cache. Since Cloudflare D1 is now <strong>ONLINE</strong>, you can migrate this local work directly into your Cloud SQL instance.
+                  </p>
+                  <button
+                    onClick={async () => {
+                      setIsSyncingLocal(true);
+                      try {
+                        const localTasks = getLocalTasks();
+                        const localFiles = getLocalFiles();
+                        const res = await fetch("/api/sync-local", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ tasks: localTasks, files: localFiles })
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                          logAudit(data.message || "Offline workspace synchronized to Cloudflare D1.");
+                          await fetchTasks(false);
+                          await fetchMetrics(false);
+                          alert("Migration Successful! Your local tasks and snapshots have been successfully pushed to Cloudflare D1!");
+                        } else {
+                          throw new Error(data.error || "Sync request failed");
+                        }
+                      } catch (e: any) {
+                        logAudit(`⚠️ Migration Failed: ${e.message}`);
+                        alert(`Migration Failed: ${e.message}`);
+                      } finally {
+                        setIsSyncingLocal(false);
+                      }
+                    }}
+                    disabled={isSyncingLocal}
+                    className="w-full mt-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold font-mono text-[10px] rounded flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                  >
+                    {isSyncingLocal ? (
+                      <>
+                        <span className="h-3 w-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                        <span>Synchronizing to D1...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Cloud className="w-3.5 h-3.5" />
+                        <span>Push Local Data to Cloudflare D1</span>
+                      </>
+                    )}
+                  </button>
                 </div>
               )}
 
