@@ -497,7 +497,8 @@ const initD1Tables = async () => {
     console.log("Verified and constructed D1 database tables.");
 
     const checkTasks = await executeD1Query("SELECT COUNT(*) as cnt FROM CodeTasks");
-    const count = checkTasks[0]?.cnt ?? checkTasks[0]?.["COUNT(*)"] ?? 0;
+    const firstRow = checkTasks[0];
+    const count = firstRow ? Number(firstRow.cnt ?? firstRow.CNT ?? firstRow["COUNT(*)"] ?? firstRow["count(*)"] ?? 0) : 0;
     
     if (count === 0) {
       console.log("D1 Database tables empty. Loading core pre-seeded task/conflict snaps...");
@@ -528,6 +529,7 @@ const initD1Tables = async () => {
     }
   } catch (err) {
     console.error("Cloudflare D1 tables setup failure:", err);
+    throw err;
   }
 };
 
