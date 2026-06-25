@@ -1590,6 +1590,103 @@ function detectDifferences(base: string, modified: string) {
   return result;
 }
 
+// Endpoint to bulk sync/migrate client-side local storage snapshots to Cloudflare D1
+app.post("/api/sync-local", async (req, res) => {
+  if (!isD1Configured()) {
+    return res.status(400).json({ error: "Cloudflare D1 is not configured." });
+  }
+
+  const { tasks, files } = req.body;
+  if (!Array.isArray(tasks) || !Array.isArray(files)) {
+    return res.status(400).json({ error: "Invalid payload. 'tasks' and 'files' arrays are required." });
+  }
+
+  try {
+    // Make sure D1 tables exist and are ready
+    await initD1Tables();
+
+    // Sync tasks
+    for (const task of tasks) {
+      if (!task.taskId) continue;
+      const exists = await executeD1Query("SELECT 1 FROM CodeTasks WHERE UPPER(TaskId) = UPPER(?)", [task.taskId]);
+      if (exists.length === 0) {
+        await executeD1Query(
+          "INSERT INTO CodeTasks (TaskId, BaseBranch, FeatureBranch, Description, Developer, CreatedDate, RepositoryUrl, CommitId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          [
+            task.taskId,
+            task.baseBranch || "main",
+            task.featureBranch || "",
+            task.description || "",
+            task.developer || "Lead Developer",
+            task.createdDate || new Date().toISOString(),
+            task.repositoryUrl || "https://github.com/enterprise/source.git",
+            task.commitId || ""
+          ]
+        );
+      }
+    }
+
+    // Sync files and any related conflicts
+    for (const file of files) {
+      if (!file.id || !file.taskId) continue;
+      const fileExists = await executeD1Query("SELECT 1 FROM TaskFiles WHERE Id = ?", [file.id]);
+      if (fileExists.length === 0) {
+        await executeD1Query(
+          "INSERT INTO TaskFiles (Id, TaskId, FileName, Path, Extension, BaseContent, FeatureContent, ResolvedContent, IsConflict, IsResolved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          [
+            file.id,
+            file.taskId,
+            file.fileName,
+            file.path,
+            file.extension,
+            file.baseContent || "",
+            file.featureContent || "",
+            file.resolvedContent || "",
+            file.isConflict ? 1 : 0,
+            file.isResolved ? 1 : 0
+          ]
+        );
+
+        // Seed Conflict if it was a conflict
+        if (file.isConflict) {
+          const cid = "c_" + String(file.id).replace("file_", "");
+          const conflictExists = await executeD1Query("SELECT 1 FROM TaskConflicts WHERE FileId = ?", [file.id]);
+          if (conflictExists.length === 0) {
+            const auditTrail = JSON.stringify([
+              `System: Migrated conflict configuration from client local storage.`
+            ]);
+            await executeD1Query(
+              "INSERT INTO TaskConflicts (Id, TaskId, FileId, ConflictText, Resolution, AuditTrail) VALUES (?, ?, ?, ?, ?, ?)",
+              [cid, file.taskId, file.id, file.featureContent || "", file.resolvedContent || "", auditTrail]
+            );
+          }
+        }
+      } else {
+        // Update if it already exists to synchronize latest client changes
+        await executeD1Query(
+          "UPDATE TaskFiles SET FileName = ?, Path = ?, Extension = ?, BaseContent = ?, FeatureContent = ?, ResolvedContent = ?, IsConflict = ?, IsResolved = ? WHERE Id = ?",
+          [
+            file.fileName,
+            file.path,
+            file.extension,
+            file.baseContent || "",
+            file.featureContent || "",
+            file.resolvedContent || "",
+            file.isConflict ? 1 : 0,
+            file.isResolved ? 1 : 0,
+            file.id
+          ]
+        );
+      }
+    }
+
+    res.json({ success: true, message: `Successfully synchronized ${tasks.length} tasks and ${files.length} file snapshots to Cloudflare D1 database!` });
+  } catch (err: any) {
+    console.error("Local sync error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 4. API Endpoints
 app.get("/api/db-status", async (req, res) => {
   const accountId = cleanEnvVar(process.env.CLOUDFLARE_ACCOUNT_ID);
@@ -1607,6 +1704,10 @@ app.get("/api/db-status", async (req, res) => {
     try {
       // Live test check
       await executeD1Query("SELECT 1");
+      
+      // Dynamically initialize / construct D1 tables if they don't exist yet
+      await initD1Tables();
+
       res.json({ 
         type: "Cloudflare D1 Serverless", 
         status: "Connected",
@@ -1673,6 +1774,22 @@ app.post("/api/tasks", async (req, res) => {
     };
 
     await saveCodeTaskToDb(newTask);
+
+    // Provision a default code file for this task to avoid empty workspace
+    const dummyFile = {
+      id: "file_" + newTask.taskId.replace("TASK-", "") + "_1",
+      taskId: newTask.taskId,
+      fileName: "Index.cs",
+      path: "Infrastructure/Index.cs",
+      extension: "cs",
+      baseContent: "using System;\n\nnamespace EnterpriseService\n{\n    public class Index\n    {\n        // CodeShield snapshot initial\n    }\n}",
+      featureContent: "using System;\n\nnamespace EnterpriseService\n{\n    public class Index\n    {\n        // CodeShield snapshot with changes on " + new Date().toLocaleDateString() + "\n    }\n}",
+      resolvedContent: "",
+      isConflict: false,
+      isResolved: false
+    };
+    await saveTaskFileToDb(dummyFile);
+
     res.status(201).json(newTask);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
