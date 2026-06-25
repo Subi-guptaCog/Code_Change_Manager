@@ -313,9 +313,35 @@ export default function App() {
 
   const [isRefreshingDb, setIsRefreshingDb] = useState(false);
   const [isSyncingLocal, setIsSyncingLocal] = useState(false);
+  const [isReseedingDb, setIsReseedingDb] = useState(false);
 
   const fetchDbStatus = async () => {
     await checkAndInitializeDbStatus();
+  };
+
+  const handleDbReseed = async () => {
+    if (!window.confirm("Are you sure you want to drop and re-initialize all D1 tables? This will delete all current tasks in D1 and re-seed with the clean starter tasks.")) {
+      return;
+    }
+    setIsReseedingDb(true);
+    try {
+      const res = await fetch("/api/db-reseed", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to reseed database");
+      }
+      logAudit("✨ Database reset & reseed completed successfully.");
+      alert("Database reset & re-seed successful! D1 tables are now fresh and populated.");
+      
+      const isFallback = await checkAndInitializeDbStatus();
+      await fetchTasks(isFallback);
+      await fetchMetrics(isFallback);
+    } catch (e: any) {
+      logAudit(`⚠️ Reseed Failed: ${e.message}`);
+      alert(`Database Reseed Failed: ${e.message}`);
+    } finally {
+      setIsReseedingDb(false);
+    }
   };
 
   const handleManualDbRefresh = async () => {
@@ -2361,24 +2387,48 @@ export default function App() {
             </div>
 
             {/* Modal Footer */}
-            <div className="p-4 bg-gray-50 border-t border-gray-200 flex justify-between items-center">
-              <button
-                onClick={handleManualDbRefresh}
-                disabled={isRefreshingDb}
-                className="px-4 py-1.5 bg-[#0078D4] hover:bg-[#106ebe] text-white text-[11px] font-bold font-mono rounded shadow-sm disabled:opacity-50 flex items-center gap-1.5 transition-all cursor-pointer"
-              >
-                {isRefreshingDb ? (
-                  <>
-                    <span className="h-3 w-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-                    <span>Testing...</span>
-                  </>
-                ) : (
-                  <>
-                    <Database className="w-3.5 h-3.5" />
-                    <span>Recheck Connection</span>
-                  </>
+            <div className="p-4 bg-gray-50 border-t border-gray-200 flex justify-between items-center gap-2 flex-wrap">
+              <div className="flex gap-2">
+                <button
+                  onClick={handleManualDbRefresh}
+                  disabled={isRefreshingDb}
+                  className="px-4 py-1.5 bg-[#0078D4] hover:bg-[#106ebe] text-white text-[11px] font-bold font-mono rounded shadow-sm disabled:opacity-50 flex items-center gap-1.5 transition-all cursor-pointer"
+                >
+                  {isRefreshingDb ? (
+                    <>
+                      <span className="h-3 w-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                      <span>Testing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Database className="w-3.5 h-3.5" />
+                      <span>Recheck Connection</span>
+                    </>
+                  )}
+                </button>
+
+                {dbStatusDetails?.details?.CLOUDFLARE_API_TOKEN === "Configured" && (
+                  <button
+                    onClick={handleDbReseed}
+                    disabled={isReseedingDb}
+                    className="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white text-[11px] font-bold font-mono rounded shadow-sm disabled:opacity-50 flex items-center gap-1.5 transition-all cursor-pointer"
+                    id="btn-reseed-d1"
+                    title="Drops existing tables and recreates them with starter seed metadata"
+                  >
+                    {isReseedingDb ? (
+                      <>
+                        <span className="h-3 w-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                        <span>Resetting D1...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Database className="w-3.5 h-3.5" />
+                        <span>Reset & Re-seed D1</span>
+                      </>
+                    )}
+                  </button>
                 )}
-              </button>
+              </div>
 
               <button
                 onClick={() => setIsDbStatusModalOpen(false)}
