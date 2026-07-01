@@ -1796,21 +1796,6 @@ app.post("/api/tasks", async (req, res) => {
 
     await saveCodeTaskToDb(newTask);
 
-    // Provision a default code file for this task to avoid empty workspace
-    const dummyFile = {
-      id: "file_" + newTask.taskId.replace("TASK-", "") + "_1",
-      taskId: newTask.taskId,
-      fileName: "Index.cs",
-      path: "Infrastructure/Index.cs",
-      extension: "cs",
-      baseContent: "using System;\n\nnamespace EnterpriseService\n{\n    public class Index\n    {\n        // CodeShield snapshot initial\n    }\n}",
-      featureContent: "using System;\n\nnamespace EnterpriseService\n{\n    public class Index\n    {\n        // CodeShield snapshot with changes on " + new Date().toLocaleDateString() + "\n    }\n}",
-      resolvedContent: "",
-      isConflict: false,
-      isResolved: false
-    };
-    await saveTaskFileToDb(dummyFile);
-
     res.status(201).json(newTask);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
