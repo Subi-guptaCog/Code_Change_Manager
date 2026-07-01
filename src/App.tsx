@@ -815,9 +815,7 @@ export default function App() {
         const textContent = event.target?.result as string || "";
         
         let modifiedPayloadText = textContent;
-        if (!textContent.includes("<<<<<<< HEAD")) {
-          modifiedPayloadText = textContent + "\n\n// Enterprise Feature branch additions modified at " + new Date().toLocaleTimeString();
-        }
+        
 
         if (useLocalStorageFallback) {
           const localFiles = getLocalFiles();
