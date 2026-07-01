@@ -583,22 +583,6 @@ export default function App() {
       const updatedTasks = [...localTasks, newTask];
       saveLocalTasks(updatedTasks);
       setTasks(updatedTasks);
-      
-      const localFiles = getLocalFiles();
-      const dummyFile: TaskFile = {
-        id: "file_" + newTask.taskId.replace("TASK-", "") + "_1",
-        taskId: newTask.taskId,
-        fileName: "Index.cs",
-        path: "Infrastructure/Index.cs",
-        extension: "cs",
-        baseContent: "using System;\n\nnamespace EnterpriseService\n{\n    public class Index\n    {\n        // CodeShield snapshot initial\n    }\n}",
-        featureContent: "using System;\n\nnamespace EnterpriseService\n{\n    public class Index\n    {\n        // CodeShield snapshot with changes on " + new Date().toLocaleDateString() + "\n    }\n}",
-        resolvedContent: "",
-        isConflict: false,
-        isResolved: false
-      };
-      const updatedFiles = [...localFiles, dummyFile];
-      saveLocalFiles(updatedFiles);
 
       handleSelectTask(newTask);
       setIsNewTaskModalOpen(false);
@@ -613,7 +597,7 @@ export default function App() {
         repositoryUrl: "https://github.com/enterprise/billing-api.git"
       });
 
-      setMetrics(getLocalMetrics(updatedTasks, updatedFiles));
+      setMetrics(getLocalMetrics(updatedTasks, getLocalFiles()));
       logAudit(`Successfully provisioned Task Record ${newTask.taskId} in local client database.`);
       return;
     }
@@ -815,7 +799,6 @@ export default function App() {
         const textContent = event.target?.result as string || "";
         
         let modifiedPayloadText = textContent;
-        
 
         if (useLocalStorageFallback) {
           const localFiles = getLocalFiles();
